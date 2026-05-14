@@ -7,7 +7,6 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const user = searchParams.get("address")?.trim() ?? "";
   const days = Math.max(1, Number(searchParams.get("days") ?? "14"));
-  const asset = "XYZ";
 
   if (!/^0x[a-fA-F0-9]{40}$/.test(user)) {
     return NextResponse.json({ error: "Adresse wallet invalide." }, { status: 400 });
@@ -34,12 +33,11 @@ export async function GET(req: NextRequest) {
   }
 
   const fills = (await response.json()) as Fill[];
-  const summary = summarizeFills(fills, asset);
+  const summary = summarizeFills(fills);
 
   return NextResponse.json({
     address: user,
     days,
-    asset,
     period: { startTime, endTime },
     source: "api",
     ...summary,

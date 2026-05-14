@@ -9,23 +9,22 @@ type StatsResponse = {
   source?: "api" | "csv";
   totals: {
     fills: number;
-    perps: { volume: number; pnl: number };
-    spot: { volume: number; volumeUnits: number; pnl: number };
     outcomes: { volume: number; pnl: number };
-    focusPerps: { volume: number; pnl: number };
+    xyz: { volume: number; pnl: number };
+    perps: { volume: number; pnl: number };
+    spotVolume: number;
+    unitVolume: number;
+    totalVolume: number;
   };
   winrates: {
-    perps: number;
-    focusPerps: number;
     outcomes: number;
+    xyz: number;
+    perps: number;
   };
 };
 
 const formatUsd = (v: number) =>
   new Intl.NumberFormat("fr-FR", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(v);
-
-const formatNum = (v: number) =>
-  new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 4 }).format(v);
 
 const formatPct = (v: number) => `${v.toFixed(2)}%`;
 
@@ -102,17 +101,18 @@ export default function Home() {
   const cards = useMemo(() => {
     if (!data) return [];
     return [
+      { label: "Volume outcomes", value: formatUsd(data.totals.outcomes.volume) },
+      { label: "PVL outcomes", value: formatUsd(data.totals.outcomes.pnl) },
+      { label: "Volume XYZ", value: formatUsd(data.totals.xyz.volume) },
+      { label: "PVL XYZ", value: formatUsd(data.totals.xyz.pnl) },
+      { label: "Volume spot", value: formatUsd(data.totals.spotVolume) },
+      { label: "Volume Unit (BTC/ETH/PUMP/SOL)", value: formatUsd(data.totals.unitVolume) },
       { label: "Volume perps", value: formatUsd(data.totals.perps.volume) },
-      { label: "Volume spot", value: formatUsd(data.totals.spot.volume) },
-      { label: "Volume spot asset unit", value: formatNum(data.totals.spot.volumeUnits) },
-      { label: "Volume perps asset XYZ", value: formatUsd(data.totals.focusPerps.volume) },
-      { label: "Volume outcomes + settlement", value: formatUsd(data.totals.outcomes.volume) },
       { label: "PVL perps", value: formatUsd(data.totals.perps.pnl) },
-      { label: "PVL XYZ", value: formatUsd(data.totals.focusPerps.pnl) },
-      { label: "PVL outcomes + settlement", value: formatUsd(data.totals.outcomes.pnl) },
+      { label: "Volume total (1+3+5)", value: formatUsd(data.totals.totalVolume) },
+      { label: "Winrate outcomes", value: formatPct(data.winrates.outcomes) },
+      { label: "Winrate XYZ", value: formatPct(data.winrates.xyz) },
       { label: "Winrate perps", value: formatPct(data.winrates.perps) },
-      { label: "Winrate XYZ", value: formatPct(data.winrates.focusPerps) },
-      { label: "Winrate outcomes + settlement", value: formatPct(data.winrates.outcomes) },
     ];
   }, [data]);
 
@@ -122,10 +122,7 @@ export default function Home() {
     setError("");
 
     try {
-      const params = new URLSearchParams({
-        address: address.trim(),
-        days: String(days),
-      });
+      const params = new URLSearchParams({ address: address.trim(), days: String(days) });
       const res = await fetch(`/api/hyperliquid-stats?${params.toString()}`);
       const json = (await res.json()) as StatsResponse;
       if (!res.ok) {
@@ -152,13 +149,8 @@ export default function Home() {
     try {
       const text = await file.text();
       const fills = parseCsvFills(text);
-      const summary = summarizeFills(fills, "XYZ");
-
-      setData({
-        days,
-        source: "csv",
-        ...summary,
-      });
+      const summary = summarizeFills(fills);
+      setData({ days, source: "csv", ...summary });
     } catch (e) {
       setData(null);
       setError(e instanceof Error ? e.message : "Import CSV impossible.");
@@ -172,9 +164,6 @@ export default function Home() {
     <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 px-4 py-8 md:px-8">
       <header className="rounded-3xl border border-white/70 bg-white/75 p-6 shadow-sm backdrop-blur">
         <h1 className="text-2xl font-semibold">Hyperliquid Portfolio Viewer</h1>
-        <p className="mt-2 text-sm text-slate-600">
-          Dashboard Vercel pour suivre volumes, PVL et winrates sur perps, spot, outcomes et settlement.
-        </p>
       </header>
 
       <form onSubmit={onSubmit} className="grid gap-3 rounded-3xl border border-white/70 bg-white/75 p-5 shadow-sm md:grid-cols-4">
@@ -209,9 +198,7 @@ export default function Home() {
 
       {data ? (
         <>
-          <p className="text-sm text-slate-600">
-            Source active: {data.source === "csv" ? "CSV local" : "API Hyperliquid"}
-          </p>
+          <p className="text-sm text-slate-600">Source active: {data.source === "csv" ? "CSV local" : "API Hyperliquid"}</p>
           <section className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
             {cards.map((c) => (
               <article key={c.label} className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm">
@@ -219,10 +206,6 @@ export default function Home() {
                 <p className="mt-2 text-xl font-semibold">{c.value}</p>
               </article>
             ))}
-            <article className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm">
-              <p className="text-sm text-slate-500">Nombre de fills analyses</p>
-              <p className="mt-2 text-xl font-semibold">{formatNum(data.totals.fills)}</p>
-            </article>
           </section>
         </>
       ) : null}
