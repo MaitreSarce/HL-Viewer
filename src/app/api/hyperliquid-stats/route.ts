@@ -140,7 +140,7 @@ export async function GET(req: NextRequest) {
   });
 
   if (!response.ok) {
-    return NextResponse.json({ error: "Hyperliquid a renvoyé une erreur." }, { status: 502 });
+    return NextResponse.json({ error: "Hyperliquid a renvoyÃ© une erreur." }, { status: 502 });
   }
 
   const fills = (await response.json()) as Fill[];

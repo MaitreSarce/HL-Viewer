@@ -85,7 +85,7 @@ export default function Home() {
       <header className="rounded-3xl border border-white/70 bg-white/75 p-6 shadow-sm backdrop-blur">
         <h1 className="text-2xl font-semibold">Hyperliquid Portfolio Viewer</h1>
         <p className="mt-2 text-sm text-slate-600">
-          Dashboard prêt pour Vercel pour suivre volumes, PVL et winrates sur perps, spot, outcomes et settlement.
+          Dashboard prÃªt pour Vercel pour suivre volumes, PVL et winrates sur perps, spot, outcomes et settlement.
         </p>
       </header>
 
@@ -132,7 +132,7 @@ export default function Home() {
             </article>
           ))}
           <article className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm">
-            <p className="text-sm text-slate-500">Nombre de fills analysés</p>
+            <p className="text-sm text-slate-500">Nombre de fills analysÃ©s</p>
             <p className="mt-2 text-xl font-semibold">{formatNum(data.totals.fills)}</p>
           </article>
         </section>

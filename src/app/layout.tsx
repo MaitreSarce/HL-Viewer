@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Hyperliquid Portfolio Viewer",
-  description: "Viewer de statistiques Hyperliquid prêt pour Vercel",
+  description: "Viewer de statistiques Hyperliquid prÃªt pour Vercel",
 };
 
 export default function RootLayout({
