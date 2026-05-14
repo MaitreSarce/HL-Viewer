@@ -60,7 +60,7 @@ const winrate = (m: Metrics) => {
   return total > 0 ? (m.wins / total) * 100 : 0;
 };
 
-export const summarizeFills = (fills: Fill[], source: "api" | "csv" = "csv") => {
+export const summarizeFills = (fills: Fill[]) => {
   const outcomes = emptyMetrics();
   const xyz = emptyMetrics();
   const perps = emptyMetrics();
@@ -73,48 +73,98 @@ export const summarizeFills = (fills: Fill[], source: "api" | "csv" = "csv") => 
     const dir = readText(fill, ["dir", "side"]).toUpperCase();
     const volume = tradeVolume(fill);
 
-    const isOutcomesCsv = coin.includes("?");
-    const isOutcomesApi =
-      coin.includes("?") ||
-      coin.startsWith("#") ||
-      coin.startsWith("+") ||
-      dir.includes("SETTLE") ||
-      dir.includes("DELIST") ||
-      dir.includes("OUTCOME");
-    const isOutcomes = source === "api" ? isOutcomesApi : isOutcomesCsv;
-
-    // 1) outcomes stats (volume + pvl)
-    if (isOutcomes) {
+    if (coin.includes("?")) {
       updateMetric(outcomes, fill);
     }
 
-    const isXyzCsv = coin.includes("(XYZ)");
-    const isXyzApi = coin.includes("(XYZ)") || coin === "XYZ" || coin.includes("XYZ/");
-    const isXyz = source === "api" ? isXyzApi : isXyzCsv;
-
-    // 2) xyz stats (volume + pvl)
-    if (isXyz) {
+    if (coin.includes("(XYZ)")) {
       updateMetric(xyz, fill);
     }
 
-    // 3) dir contains buy or sell => spot volume
     const isSpot = dir.includes("BUY") || dir.includes("SELL");
     if (isSpot) {
       spotVolume += volume;
     }
 
-    // 4) spot + coin contains BTC/ETH/PUMP/SOL => volume unit
     if (isSpot && (coin.includes("BTC") || coin.includes("ETH") || coin.includes("PUMP") || coin.includes("SOL"))) {
       unitVolume += volume;
     }
 
-    // 5) dir contains Long or Short => perps stats (volume + pvl)
     if (dir.includes("LONG") || dir.includes("SHORT")) {
       updateMetric(perps, fill);
     }
   }
 
-  // 6) volume total = outcomes volume + spot volume + perps volume
+  const totalVolume = outcomes.volume + spotVolume + perps.volume;
+
+  return {
+    totals: {
+      fills: fills.length,
+      outcomes,
+      xyz,
+      perps,
+      spotVolume,
+      unitVolume,
+      totalVolume,
+    },
+    winrates: {
+      outcomes: winrate(outcomes),
+      xyz: winrate(xyz),
+      perps: winrate(perps),
+    },
+  };
+};
+
+const getLegacyApiCategory = (fill: Fill) => {
+  const coin = readText(fill, ["coin", "asset", "symbol"]).toUpperCase();
+  const dir = readText(fill, ["dir", "side"]).toLowerCase();
+
+  if (coin.startsWith("#") || coin.startsWith("+") || dir.includes("settle") || dir.includes("delist")) {
+    return "outcomes" as const;
+  }
+
+  if (coin.includes("/") || coin.startsWith("@")) {
+    return "spot" as const;
+  }
+
+  return "perps" as const;
+};
+
+export const summarizeFillsApiLegacy = (fills: Fill[]) => {
+  const outcomes = emptyMetrics();
+  const xyz = emptyMetrics();
+  const perps = emptyMetrics();
+
+  let spotVolume = 0;
+  let unitVolume = 0;
+
+  for (const fill of fills) {
+    const category = getLegacyApiCategory(fill);
+    const coin = readText(fill, ["coin", "asset", "symbol"]).toUpperCase();
+    const volume = tradeVolume(fill);
+
+    if (category === "outcomes") {
+      updateMetric(outcomes, fill);
+      continue;
+    }
+
+    if (category === "spot") {
+      spotVolume += volume;
+      if (coin.includes("BTC") || coin.includes("ETH") || coin.includes("PUMP") || coin.includes("SOL")) {
+        unitVolume += volume;
+      }
+      if (coin.includes("XYZ")) {
+        updateMetric(xyz, fill);
+      }
+      continue;
+    }
+
+    updateMetric(perps, fill);
+    if (coin === "XYZ") {
+      updateMetric(xyz, fill);
+    }
+  }
+
   const totalVolume = outcomes.volume + spotVolume + perps.volume;
 
   return {

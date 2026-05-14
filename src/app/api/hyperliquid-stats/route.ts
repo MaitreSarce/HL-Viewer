@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Fill, summarizeFills } from "@/lib/stats";
+import { Fill, summarizeFillsApiLegacy } from "@/lib/stats";
 
 const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
 
@@ -64,7 +64,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const summary = summarizeFills(fills, "api");
+  const summary = summarizeFillsApiLegacy(fills);
 
   return NextResponse.json({
     address: user,
