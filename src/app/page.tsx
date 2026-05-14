@@ -109,7 +109,7 @@ export default function Home() {
       { label: "Volume Unit (BTC/ETH/PUMP/SOL)", value: formatUsd(data.totals.unitVolume) },
       { label: "Volume perps", value: formatUsd(data.totals.perps.volume) },
       { label: "PVL perps", value: formatUsd(data.totals.perps.pnl) },
-      { label: "Volume total (1+3+5)", value: formatUsd(data.totals.totalVolume) },
+      { label: "Volume total (perps + spot + outcomes)", value: formatUsd(data.totals.totalVolume) },
       { label: "Winrate outcomes", value: formatPct(data.winrates.outcomes) },
       { label: "Winrate XYZ", value: formatPct(data.winrates.xyz) },
       { label: "Winrate perps", value: formatPct(data.winrates.perps) },
@@ -174,13 +174,16 @@ export default function Home() {
           onChange={(e) => setAddress(e.target.value)}
           required
         />
-        <input
-          type="number"
-          min={1}
-          className="rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-sky-300 focus:ring"
-          value={days}
-          onChange={(e) => setDays(Number(e.target.value))}
-        />
+        <label className="flex flex-col gap-1 text-sm text-slate-700">
+          Nombre de jours
+          <input
+            type="number"
+            min={1}
+            className="rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-sky-300 focus:ring"
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
+          />
+        </label>
         <button
           type="submit"
           disabled={loading}
@@ -193,6 +196,23 @@ export default function Home() {
           <input type="file" accept=".csv,text/csv" className="hidden" onChange={onCsvImport} />
         </label>
       </form>
+
+      <section className="rounded-2xl border border-white/60 bg-white/50 px-4 py-3 text-xs text-slate-500">
+        <p>Thank you for your support.</p>
+        <p>
+          HL ref link :{" "}
+          <a
+            href="https://app.hyperliquid.xyz/join/MAITRESARCE"
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2 hover:text-slate-700"
+          >
+            https://app.hyperliquid.xyz/join/MAITRESARCE
+          </a>
+        </p>
+        <p>EVM address : 0xCc8A2E7E279C10c6D740Eb0b27D1993F10437335</p>
+        <p>BTC address : bc1qlknx6s5xpahym2t5jj2tt50x62rp4trt5qurz7</p>
+      </section>
 
       {error ? <p className="rounded-xl bg-red-50 px-4 py-3 text-red-700">{error}</p> : null}
 

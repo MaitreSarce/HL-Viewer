@@ -3,6 +3,24 @@ import { Fill, summarizeFills } from "@/lib/stats";
 
 const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
 
+const fetchFills = async (body: Record<string, unknown>) => {
+  const response = await fetch(HYPERLIQUID_INFO_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  return { ok: response.ok, payload };
+};
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const user = searchParams.get("address")?.trim() ?? "";
@@ -15,24 +33,39 @@ export async function GET(req: NextRequest) {
   const endTime = Date.now();
   const startTime = endTime - days * 24 * 60 * 60 * 1000;
 
-  const response = await fetch(HYPERLIQUID_INFO_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  const byTime = await fetchFills({
       type: "userFillsByTime",
       user,
       startTime,
       endTime,
       aggregateByTime: true,
-    }),
-    cache: "no-store",
   });
 
-  if (!response.ok) {
-    return NextResponse.json({ error: "Hyperliquid a renvoye une erreur." }, { status: 502 });
+  let fills: Fill[] = [];
+
+  if (byTime.ok && Array.isArray(byTime.payload)) {
+    fills = byTime.payload as Fill[];
+  } else {
+    const latest = await fetchFills({
+      type: "userFills",
+      user,
+      aggregateByTime: true,
+    });
+
+    if (latest.ok && Array.isArray(latest.payload)) {
+      fills = latest.payload as Fill[];
+    } else {
+      const rawMessage =
+        (typeof byTime.payload === "object" &&
+          byTime.payload !== null &&
+          "error" in byTime.payload &&
+          typeof (byTime.payload as { error?: unknown }).error === "string" &&
+          (byTime.payload as { error: string }).error) ||
+        "Réponse API invalide";
+      return NextResponse.json({ error: `Hyperliquid API: ${rawMessage}` }, { status: 502 });
+    }
   }
 
-  const fills = (await response.json()) as Fill[];
   const summary = summarizeFills(fills);
 
   return NextResponse.json({
