@@ -175,7 +175,7 @@ export default function Home() {
           required
         />
         <label className="flex flex-col gap-1 text-sm text-slate-700">
-          Nombre de jours
+          Number of days
           <input
             type="number"
             min={1}
@@ -184,13 +184,17 @@ export default function Home() {
             onChange={(e) => setDays(Number(e.target.value))}
           />
         </label>
-        <button
-          type="submit"
-          disabled={loading}
-          className="rounded-xl bg-slate-900 px-4 py-2 font-medium text-white transition hover:bg-slate-700 disabled:opacity-60"
-        >
-          {loading ? "Chargement..." : "Analyser via API"}
-        </button>
+        <div className="flex flex-col gap-1">
+          <button
+            type="submit"
+            disabled={loading}
+            className="rounded-xl bg-slate-900 px-4 py-2 font-medium text-white transition hover:bg-slate-700 disabled:opacity-60"
+          >
+            {loading ? "Chargement..." : "Analyser via API"}
+          </button>
+          <p className="text-[11px] text-amber-700">Warning: API stats are limited to the most recent 2,000 fills per request.</p>
+          <p className="text-[11px] text-emerald-700">CSV import uses your full exported history for complete stats.</p>
+        </div>
         <label className="flex cursor-pointer items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
           Import CSV
           <input type="file" accept=".csv,text/csv" className="hidden" onChange={onCsvImport} />
