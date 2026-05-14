@@ -149,7 +149,7 @@ export default function Home() {
     try {
       const text = await file.text();
       const fills = parseCsvFills(text);
-      const summary = summarizeFills(fills);
+      const summary = summarizeFills(fills, "csv");
       setData({ days, source: "csv", ...summary });
     } catch (e) {
       setData(null);

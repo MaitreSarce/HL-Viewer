@@ -64,7 +64,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const summary = summarizeFills(fills);
+  const summary = summarizeFills(fills, "api");
 
   return NextResponse.json({
     address: user,

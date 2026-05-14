@@ -4,6 +4,10 @@ export type Fill = {
   px?: string;
   closedPnl?: string;
   dir?: string;
+  side?: string;
+  asset?: string;
+  symbol?: string;
+  [key: string]: unknown;
 };
 
 type Metrics = {
@@ -26,13 +30,21 @@ const toNumber = (value: string | undefined) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+const readText = (fill: Fill, keys: string[]) => {
+  for (const key of keys) {
+    const raw = fill[key];
+    if (typeof raw === "string") return raw;
+  }
+  return "";
+};
+
 const tradeVolume = (fill: Fill) => {
-  const px = toNumber(fill.px);
-  const sz = Math.abs(toNumber(fill.sz));
+  const px = toNumber(readText(fill, ["px", "price"]));
+  const sz = Math.abs(toNumber(readText(fill, ["sz", "size", "qty"])));
   return Math.abs(px * sz);
 };
 
-const tradePnl = (fill: Fill) => toNumber(fill.closedPnl);
+const tradePnl = (fill: Fill) => toNumber(readText(fill, ["closedPnl", "closed_pnl", "pnl"]));
 
 const updateMetric = (metrics: Metrics, fill: Fill) => {
   const volume = tradeVolume(fill);
@@ -48,7 +60,7 @@ const winrate = (m: Metrics) => {
   return total > 0 ? (m.wins / total) * 100 : 0;
 };
 
-export const summarizeFills = (fills: Fill[]) => {
+export const summarizeFills = (fills: Fill[], source: "api" | "csv" = "csv") => {
   const outcomes = emptyMetrics();
   const xyz = emptyMetrics();
   const perps = emptyMetrics();
@@ -57,17 +69,31 @@ export const summarizeFills = (fills: Fill[]) => {
   let unitVolume = 0;
 
   for (const fill of fills) {
-    const coin = (fill.coin ?? "").toUpperCase();
-    const dir = (fill.dir ?? "").toUpperCase();
+    const coin = readText(fill, ["coin", "asset", "symbol"]).toUpperCase();
+    const dir = readText(fill, ["dir", "side"]).toUpperCase();
     const volume = tradeVolume(fill);
 
-    // 1) coin contains ? => outcomes stats (volume + pvl)
-    if (coin.includes("?")) {
+    const isOutcomesCsv = coin.includes("?");
+    const isOutcomesApi =
+      coin.includes("?") ||
+      coin.startsWith("#") ||
+      coin.startsWith("+") ||
+      dir.includes("SETTLE") ||
+      dir.includes("DELIST") ||
+      dir.includes("OUTCOME");
+    const isOutcomes = source === "api" ? isOutcomesApi : isOutcomesCsv;
+
+    // 1) outcomes stats (volume + pvl)
+    if (isOutcomes) {
       updateMetric(outcomes, fill);
     }
 
-    // 2) coin contains (xyz) => xyz stats (volume + pvl)
-    if (coin.includes("(XYZ)")) {
+    const isXyzCsv = coin.includes("(XYZ)");
+    const isXyzApi = coin.includes("(XYZ)") || coin === "XYZ" || coin.includes("XYZ/");
+    const isXyz = source === "api" ? isXyzApi : isXyzCsv;
+
+    // 2) xyz stats (volume + pvl)
+    if (isXyz) {
       updateMetric(xyz, fill);
     }
 
