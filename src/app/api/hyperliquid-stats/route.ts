@@ -38,7 +38,6 @@ export async function GET(req: NextRequest) {
       user,
       startTime,
       endTime,
-      aggregateByTime: true,
   });
 
   let fills: Fill[] = [];
@@ -49,7 +48,6 @@ export async function GET(req: NextRequest) {
     const latest = await fetchFills({
       type: "userFills",
       user,
-      aggregateByTime: true,
     });
 
     if (latest.ok && Array.isArray(latest.payload)) {
