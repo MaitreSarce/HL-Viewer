@@ -348,6 +348,16 @@ const unitFeeUsdFromFill = (fill: HyperliquidFill) => {
   return 0;
 };
 
+const spotFeeUsdFromFill = (fill: HyperliquidFill) => {
+  const fee = toFiniteNumber(readStringKeys(fill, ["fee", "fees"]));
+  const px = toFiniteNumber(readStringKeys(fill, ["px", "price"]));
+  const feeToken = readStringKeys(fill, ["feeToken"]).trim().toUpperCase();
+  if (!Number.isFinite(fee) || fee <= 0) return 0;
+  if (feeToken === "USDC") return fee;
+  if (Number.isFinite(px) && px > 0) return fee * px;
+  return fee;
+};
+
 const STABLE_QUOTES = new Set([
   "USD",
   "USDC",
@@ -815,7 +825,7 @@ export const summarizeTradingFills = (
     }
 
     if (isSpotTrade(coinUpper, rawCoinUpper, classificationContext) && !outcomeFill) {
-      const feePaid = fillFeePaid(fill);
+      const feePaid = spotFeeUsdFromFill(fill);
       spotVolume += volume;
       spotFeesPaid += feePaid;
       addVolumePoint(spotSeries, volume);
