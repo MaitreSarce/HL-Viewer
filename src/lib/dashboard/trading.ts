@@ -756,7 +756,8 @@ const computeUnitTwabUsd = (
   fills: HyperliquidFill[],
   resolver: CoinResolver,
   context: TradingClassificationContext,
-  endTimeMs: number
+  endTimeMs: number,
+  anchorStartTimeMs?: number
 ): number | null => {
   type SpotEvent = {
     timeMs: number;
@@ -819,6 +820,9 @@ const computeUnitTwabUsd = (
   };
 
   let firstTimeMs = events[0].timeMs;
+  if (typeof anchorStartTimeMs === "number" && Number.isFinite(anchorStartTimeMs) && anchorStartTimeMs > 0) {
+    firstTimeMs = Math.min(firstTimeMs, Math.floor(anchorStartTimeMs));
+  }
   let lastTimeMs = firstTimeMs;
   let runningValue = 0;
   let weightedArea = 0;
@@ -1100,6 +1104,21 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
       [];
     const officialSpotPoints = historyToValuePoints(officialSpotHistory);
     const officialSpotTwab = computeTwabUsdFromValuePoints(officialSpotPoints, endTime / 1000);
+    const anchoredUnitTwab = computeUnitTwabUsd(
+      fills,
+      resolver,
+      {
+        knownSpotCoins: buildSpotCoinSet(spotMeta, resolver),
+        knownPerpCoins: buildPerpCoinSet(perpMeta),
+        knownOutcomeCoins: outcomeMeta ? buildOutcomeCoinSet(outcomeMeta) : new Set<string>(),
+        knownUnitSpotIds: buildUnitSpotIdSet(spotMeta),
+      },
+      endTime,
+      officialSpotPoints.length > 0 ? officialSpotPoints[0].timeSec * 1000 : undefined
+    );
+    if (anchoredUnitTwab !== null) {
+      summary.totals.unitTwab = anchoredUnitTwab;
+    }
 
     try {
       const [vaultEquities, nonFundingRange] = await Promise.all([
