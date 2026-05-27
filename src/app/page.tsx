@@ -7,9 +7,9 @@ type TradingData = {
   source: "api";
   totals: {
     fills: number;
-    outcomes: { volume: number; pnl: number };
-    xyz: { volume: number; pnl: number };
-    perps: { volume: number; pnl: number };
+    outcomes: { volume: number; pnl: number; feesPaid: number };
+    xyz: { volume: number; pnl: number; feesPaid: number };
+    perps: { volume: number; pnl: number; feesPaid: number };
     spotVolume: number;
     spotTwab: number | null;
     unitVolume: number;
@@ -23,18 +23,29 @@ type TradingData = {
   meta?: {
     warnings?: string[];
   };
+  charts: {
+    outcomes: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
+    xyz: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
+    perps: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
+    spot: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+    unit: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+  };
 };
 
 type HevmData = {
   stats: {
     twab: number | null;
     volume: number;
+    feesPaid: number;
     contractsCount: number;
     activeDays: number;
     activeMonths: number;
     sinceFirstTx: { days: number; months: number; years: number };
     bridgeVolume: number;
     txCount: number;
+    charts: {
+      volume: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+    };
   };
   meta: {
     warnings: string[];
@@ -51,6 +62,9 @@ type UnitBridgeData = {
     destinationChainsCount: number;
     sinceFirstTx: { days: number; months: number; years: number };
     txCount: number;
+    charts: {
+      volume: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+    };
   };
   meta: {
     coverageMode: "auth-range" | "public-snapshot" | "cursor-paginated";
@@ -59,6 +73,7 @@ type UnitBridgeData = {
 };
 
 type TabKey = "trading" | "hevm" | "unit";
+type HistogramGranularity = "day" | "week" | "month";
 
 const formatUsd = (value: number) =>
   new Intl.NumberFormat("en-US", {
@@ -98,9 +113,45 @@ const ZoneCard = ({
   </article>
 );
 
+const HistogramCard = ({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: Array<{ label: string; value: number }>;
+}) => {
+  const max = rows.reduce((acc, row) => (Math.abs(row.value) > acc ? Math.abs(row.value) : acc), 0);
+  return (
+    <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
+      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
+      {rows.length === 0 ? (
+        <p className="text-xs text-slate-500">No data.</p>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((row) => {
+            const widthPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
+            return (
+              <div key={`${title}-${row.label}`} className="space-y-1">
+                <div className="flex items-center justify-between text-[11px] text-slate-600">
+                  <span>{row.label}</span>
+                  <span>{formatUsd(row.value)}</span>
+                </div>
+                <div className="h-2 w-full rounded bg-slate-100">
+                  <div className="h-2 rounded bg-slate-700" style={{ width: `${widthPct}%` }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </article>
+  );
+};
+
 export default function Home() {
   const [address, setAddress] = useState("");
   const [activeTab, setActiveTab] = useState<TabKey>("trading");
+  const [histGranularity, setHistGranularity] = useState<HistogramGranularity>("day");
   const [loadingApi, setLoadingApi] = useState(false);
   const [error, setError] = useState("");
 
@@ -240,6 +291,26 @@ export default function Home() {
       </nav>
 
       {error ? <p className="rounded-xl bg-red-50 px-4 py-3 text-red-700">{error}</p> : null}
+      <div className="flex items-center gap-2">
+        {([
+          { id: "day", label: "Day" },
+          { id: "week", label: "Week" },
+          { id: "month", label: "Month" },
+        ] as const).map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => setHistGranularity(option.id)}
+            className={`rounded-lg px-3 py-1 text-xs font-medium ${
+              histGranularity === option.id
+                ? "bg-slate-900 text-white"
+                : "border border-slate-300 bg-white text-slate-700"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
 
       {activeTab === "trading" ? (
         <section className="space-y-4">
@@ -254,6 +325,7 @@ export default function Home() {
                   rows={[
                     { label: "Volume", value: formatUsd(trading.totals.outcomes.volume) },
                     { label: "PVL", value: formatUsd(trading.totals.outcomes.pnl) },
+                    { label: "Fees paid", value: formatUsd(trading.totals.outcomes.feesPaid) },
                     { label: "Winrate", value: formatPct(trading.winrates.outcomes) },
                   ]}
                 />
@@ -262,6 +334,7 @@ export default function Home() {
                   rows={[
                     { label: "Volume", value: formatUsd(trading.totals.xyz.volume) },
                     { label: "PVL", value: formatUsd(trading.totals.xyz.pnl) },
+                    { label: "Fees paid", value: formatUsd(trading.totals.xyz.feesPaid) },
                     { label: "Winrate", value: formatPct(trading.winrates.xyz) },
                   ]}
                 />
@@ -270,6 +343,7 @@ export default function Home() {
                   rows={[
                     { label: "Volume", value: formatUsd(trading.totals.perps.volume) },
                     { label: "PVL", value: formatUsd(trading.totals.perps.pnl) },
+                    { label: "Fees paid", value: formatUsd(trading.totals.perps.feesPaid) },
                     { label: "Winrate", value: formatPct(trading.winrates.perps) },
                   ]}
                 />
@@ -293,6 +367,40 @@ export default function Home() {
                     { label: "Volume total (perps + spot + outcomes)", value: formatUsd(trading.totals.totalVolume) },
                     { label: "Fills counted", value: formatNum(trading.totals.fills) },
                   ]}
+                />
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <HistogramCard
+                  title={`Outcomes Volume (${histGranularity})`}
+                  rows={trading.charts.outcomes[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
+                />
+                <HistogramCard
+                  title={`Outcomes PNL (${histGranularity})`}
+                  rows={trading.charts.outcomes[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
+                />
+                <HistogramCard
+                  title={`XYZ Volume (${histGranularity})`}
+                  rows={trading.charts.xyz[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
+                />
+                <HistogramCard
+                  title={`XYZ PNL (${histGranularity})`}
+                  rows={trading.charts.xyz[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
+                />
+                <HistogramCard
+                  title={`Perps Volume (${histGranularity})`}
+                  rows={trading.charts.perps[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
+                />
+                <HistogramCard
+                  title={`Perps PNL (${histGranularity})`}
+                  rows={trading.charts.perps[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
+                />
+                <HistogramCard
+                  title={`Spot Volume (${histGranularity})`}
+                  rows={trading.charts.spot[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
+                />
+                <HistogramCard
+                  title={`Unit Asset Volume (${histGranularity})`}
+                  rows={trading.charts.unit[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
                 />
               </div>
               {tradingWarnings.length > 0 ? (
@@ -321,6 +429,7 @@ export default function Home() {
                   rows={[
                     { label: "TWAB (USD)", value: hevm.stats.twab === null ? "N/A" : formatUsd(hevm.stats.twab) },
                     { label: "Volume", value: formatUsd(hevm.stats.volume) },
+                    { label: "Fees paid", value: formatUsd(hevm.stats.feesPaid) },
                     { label: "Different contracts", value: formatNum(hevm.stats.contractsCount) },
                     { label: "Different active days", value: formatNum(hevm.stats.activeDays) },
                     { label: "Different active months", value: formatNum(hevm.stats.activeMonths) },
@@ -331,6 +440,12 @@ export default function Home() {
                     { label: "Bridge volume", value: formatUsd(hevm.stats.bridgeVolume) },
                     { label: "Number of tx", value: formatNum(hevm.stats.txCount) },
                   ]}
+                />
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <HistogramCard
+                  title={`HEVM Volume (${histGranularity})`}
+                  rows={hevm.stats.charts.volume[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
                 />
               </div>
               {hevmWarnings.length > 0 ? (
@@ -369,6 +484,12 @@ export default function Home() {
                     },
                     { label: "Number of tx", value: formatNum(unitBridge.stats.txCount) },
                   ]}
+                />
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <HistogramCard
+                  title={`Unit Bridge Volume (${histGranularity})`}
+                  rows={unitBridge.stats.charts.volume[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
                 />
               </div>
               <p className="text-xs text-slate-500">

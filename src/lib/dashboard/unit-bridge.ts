@@ -37,6 +37,9 @@ type UnitBridgeStats = {
   };
   txCount: number;
   firstTxTime: number | null;
+  charts: {
+    volume: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+  };
 };
 
 export type UnitBridgeApiResult = {
@@ -126,6 +129,22 @@ const parseOperationTime = (operation: UnitOperationRecord): number => {
   if (!raw.trim()) return 0;
   const ms = Date.parse(raw);
   return Number.isFinite(ms) && ms > 0 ? ms : 0;
+};
+
+const utcWeekKey = (timestampMs: number): string => {
+  const d = new Date(timestampMs);
+  if (Number.isNaN(d.getTime())) return "";
+  const day = d.getUTCDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setUTCDate(d.getUTCDate() + diff);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.toISOString().slice(0, 10);
+};
+
+const periodKeyByGranularity = (timestampMs: number, granularity: "day" | "week" | "month") => {
+  if (granularity === "day") return utcDayKey(timestampMs);
+  if (granularity === "week") return utcWeekKey(timestampMs);
+  return utcMonthKey(timestampMs);
 };
 
 const normalizeAsset = (asset: unknown): string => {
@@ -245,6 +264,9 @@ const computeUnitBridgeStats = (
       sinceFirstTx: { days: 0, months: 0, years: 0 },
       txCount: 0,
       firstTxTime: null,
+      charts: {
+        volume: { day: [], week: [], month: [] },
+      },
     };
   }
 
@@ -254,6 +276,11 @@ const computeUnitBridgeStats = (
   const sourceChains = new Set<string>();
   const destinationChains = new Set<string>();
   const missingPriceAssets = new Set<string>();
+  const volumeSeries = {
+    day: new Map<string, number>(),
+    week: new Map<string, number>(),
+    month: new Map<string, number>(),
+  };
 
   let firstTxTime = Number.MAX_SAFE_INTEGER;
   let volumeUsd = 0;
@@ -285,7 +312,15 @@ const computeUnitBridgeStats = (
       missingPriceAssets.add(asset.toUpperCase());
       continue;
     }
-    volumeUsd += amount * price;
+    const contribution = amount * price;
+    volumeUsd += contribution;
+    if (time > 0) {
+      for (const granularity of ["day", "week", "month"] as const) {
+        const key = periodKeyByGranularity(time, granularity);
+        if (!key) continue;
+        volumeSeries[granularity].set(key, (volumeSeries[granularity].get(key) ?? 0) + contribution);
+      }
+    }
   }
 
   if (missingPriceAssets.size > 0) {
@@ -305,6 +340,13 @@ const computeUnitBridgeStats = (
     sinceFirstTx: first ? ageFromTimestamp(first) : { days: 0, months: 0, years: 0 },
     txCount: operations.filter((operation) => !EXCLUDED_ASSETS.has(normalizeAsset(operation.asset))).length,
     firstTxTime: first,
+    charts: {
+      volume: {
+        day: [...volumeSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+        week: [...volumeSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+        month: [...volumeSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+      },
+    },
   };
 };
 

@@ -24,6 +24,7 @@ const NATIVE_ASSET_KEY = "__native_hype__";
 type HevmComputed = {
   twab: number | null;
   volume: number;
+  feesPaid: number;
   contractsCount: number;
   activeDays: number;
   activeMonths: number;
@@ -35,6 +36,9 @@ type HevmComputed = {
   bridgeVolume: number;
   txCount: number;
   firstTxTime: number | null;
+  charts: {
+    volume: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+  };
 };
 
 export type HevmApiResult = {
@@ -66,6 +70,7 @@ type AccountTx = {
   from: string;
   to: string;
   valueNative: number;
+  gasFeeNative: number;
   input: string;
 };
 
@@ -109,6 +114,11 @@ type BalanceEvent = {
   hash: string;
   timeSec: number;
   deltas: BalanceDelta[];
+};
+
+type ProtocolInteraction = {
+  timeSec: number;
+  deltaUsd: number;
 };
 
 const NO_TX_MESSAGES = new Set([
@@ -224,6 +234,12 @@ const toDecimalNumber = (value: bigint, decimals: number) => {
 };
 
 const readUnitAmount = (raw: unknown, decimals: number) => abs(toDecimalNumber(toBigIntSafe(raw), decimals));
+const readGasFeeNative = (source: Record<string, unknown>) => {
+  const gasUsed = toBigIntSafe(source.gasUsed ?? source.gas_used ?? source.cumulativeGasUsed ?? 0);
+  const gasPrice = toBigIntSafe(source.gasPrice ?? source.gas_price ?? source.effectiveGasPrice ?? 0);
+  if (gasUsed <= BigInt(0) || gasPrice <= BigInt(0)) return 0;
+  return abs(toDecimalNumber(gasUsed * gasPrice, 18));
+};
 
 const normalizeSymbol = (symbol: string) => symbol.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
@@ -274,6 +290,18 @@ const utcWeekKey = (timestampMs: number): string => {
   date.setUTCHours(0, 0, 0, 0);
   return date.toISOString().slice(0, 10);
 };
+
+const periodKeyByGranularity = (timestampMs: number, granularity: "day" | "week" | "month") => {
+  if (granularity === "day") return utcDayKey(timestampMs);
+  if (granularity === "week") return utcWeekKey(timestampMs);
+  return utcMonthKey(timestampMs);
+};
+
+const emptyVolumeSeriesMaps = () => ({
+  day: new Map<string, number>(),
+  week: new Map<string, number>(),
+  month: new Map<string, number>(),
+});
 
 const readResponseJson = async (response: Response): Promise<unknown> => {
   const text = await response.text();
@@ -499,6 +527,7 @@ const parseAccountTxs = (rows: ExplorerRow[]): AccountTx[] => {
       from: normalizeAddress(readStringKeys(row, ["from"])),
       to: normalizeAddress(readStringKeys(row, ["to"])),
       valueNative: readUnitAmount(row.value, 18),
+      gasFeeNative: readGasFeeNative(row),
       input: readStringKeys(row, ["input", "raw_input"]).trim(),
     });
   }
@@ -545,6 +574,7 @@ const parseInternalTxs = (rows: ExplorerRow[]): AccountTx[] => {
       from: normalizeAddress(readStringKeys(row, ["from"])),
       to: normalizeAddress(readStringKeys(row, ["to"])),
       valueNative: readUnitAmount(row.value, 18),
+      gasFeeNative: 0,
       input: readStringKeys(row, ["input", "raw_input"]).trim(),
     });
   }
@@ -701,6 +731,53 @@ const computeVolumeUsd = (
   return volumeUsd;
 };
 
+const computeHevmVolumeSeries = (
+  sentAccountTxs: AccountTx[],
+  sentTokenTxs: TokenTx[],
+  priceContext: HistoricalPriceContext
+) => {
+  const series = emptyVolumeSeriesMaps();
+  const addPoint = (timeSec: number, usdValue: number) => {
+    if (!Number.isFinite(usdValue) || usdValue <= 0) return;
+    const timeMs = timeSec * 1000;
+    for (const granularity of ["day", "week", "month"] as const) {
+      const key = periodKeyByGranularity(timeMs, granularity);
+      if (!key) continue;
+      series[granularity].set(key, (series[granularity].get(key) ?? 0) + usdValue);
+    }
+  };
+
+  for (const tx of sentAccountTxs) {
+    if (tx.valueNative <= 0) continue;
+    const priceUsd = priceAtTimeSec(priceContext.nativeSeries, tx.timeSec);
+    if (priceUsd <= 0) continue;
+    addPoint(tx.timeSec, tx.valueNative * priceUsd);
+  }
+  for (const transfer of sentTokenTxs) {
+    if (transfer.value <= 0) continue;
+    if (isStableSymbol(transfer.symbol)) {
+      addPoint(transfer.timeSec, transfer.value);
+      continue;
+    }
+    if (isHypeLikeSymbol(transfer.symbol)) {
+      const priceUsd = priceAtTimeSec(priceContext.nativeSeries, transfer.timeSec);
+      if (priceUsd > 0) addPoint(transfer.timeSec, transfer.value * priceUsd);
+      continue;
+    }
+    const contract = normalizeAddress(transfer.contractAddress);
+    const contractSeries = priceContext.tokenSeriesByContract.get(contract);
+    if (!contractSeries || contractSeries.length === 0) continue;
+    const priceUsd = priceAtTimeSec(contractSeries, transfer.timeSec);
+    if (priceUsd > 0) addPoint(transfer.timeSec, transfer.value * priceUsd);
+  }
+
+  return {
+    day: [...series.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+    week: [...series.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+    month: [...series.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+  };
+};
+
 const computeBridgeVolumeUsd = (
   receivedAccountTxs: AccountTx[],
   receivedTokenTxs: TokenTx[],
@@ -736,6 +813,17 @@ const computeBridgeVolumeUsd = (
     }
   }
   return bridgeVolumeUsd;
+};
+
+const computeHevmFeesPaidUsd = (sentAccountTxs: AccountTx[], priceContext: HistoricalPriceContext) => {
+  let feesUsd = 0;
+  for (const tx of sentAccountTxs) {
+    if (tx.gasFeeNative <= 0) continue;
+    const priceUsd = priceAtTimeSec(priceContext.nativeSeries, tx.timeSec);
+    if (priceUsd <= 0) continue;
+    feesUsd += tx.gasFeeNative * priceUsd;
+  }
+  return feesUsd;
 };
 
 const resolveAssetPriceUsd = (
@@ -848,6 +936,7 @@ const buildBalanceEvents = (
 
 const computeHevmTwabUsd = (
   events: BalanceEvent[],
+  protocolInteractions: ProtocolInteraction[],
   priceContext: HistoricalPriceContext,
   nowSec: number
 ): { twab: number | null; inferredAssetCount: number; unpricedAssetCount: number } => {
@@ -858,7 +947,6 @@ const computeHevmTwabUsd = (
   const balances = new Map<string, number>();
   const assetsByKey = new Map<string, BalanceAsset>();
   const fallbackPriceByAsset = new Map<string, number>();
-  const inferredAssets = new Set<string>();
   const unpricedAssets = new Set<string>();
 
   const computePortfolioValueUsd = (timeSec: number): number => {
@@ -877,40 +965,21 @@ const computeHevmTwabUsd = (
     return valueUsd;
   };
 
-  const inferFallbackPricesForEvent = (event: BalanceEvent) => {
-    let pricedLegUsd = 0;
-    const unpricedLegs: BalanceDelta[] = [];
-
-    for (const delta of event.deltas) {
-      const amountAbs = abs(delta.amount);
-      if (amountAbs <= 0) continue;
-      const priceUsd = resolveAssetPriceUsd(delta.asset, event.timeSec, priceContext, fallbackPriceByAsset);
-      if (priceUsd > 0) {
-        pricedLegUsd += amountAbs * priceUsd;
-      } else {
-        unpricedLegs.push(delta);
-      }
-    }
-
-    if (pricedLegUsd <= 0 || unpricedLegs.length !== 1) return;
-
-    const leg = unpricedLegs[0];
-    const amountAbs = abs(leg.amount);
-    if (amountAbs <= 0) return;
-
-    const inferredPriceUsd = pricedLegUsd / amountAbs;
-    if (Number.isFinite(inferredPriceUsd) && inferredPriceUsd > 0) {
-      fallbackPriceByAsset.set(leg.asset.key, inferredPriceUsd);
-      inferredAssets.add(leg.asset.key);
-      unpricedAssets.delete(leg.asset.key);
-    }
-  };
-
   let cumulativeBalanceTime = 0;
   let portfolioValueUsd = 0;
+  let lockedProtocolUsd = 0;
   let firstTimeSec = events[0].timeSec;
   let lastTimeSec = firstTimeSec;
   let initialized = false;
+  let protocolCursor = 0;
+
+  const applyProtocolInteractionsUntil = (timeSec: number) => {
+    while (protocolCursor < protocolInteractions.length && protocolInteractions[protocolCursor].timeSec <= timeSec) {
+      lockedProtocolUsd += protocolInteractions[protocolCursor].deltaUsd;
+      if (lockedProtocolUsd < 0) lockedProtocolUsd = 0;
+      protocolCursor += 1;
+    }
+  };
 
   for (const event of events) {
     if (!initialized) {
@@ -922,6 +991,7 @@ const computeHevmTwabUsd = (
       lastTimeSec = event.timeSec;
     }
 
+    applyProtocolInteractionsUntil(event.timeSec);
     for (const delta of event.deltas) {
       assetsByKey.set(delta.asset.key, delta.asset);
       const nextBalance = (balances.get(delta.asset.key) ?? 0) + delta.amount;
@@ -932,8 +1002,7 @@ const computeHevmTwabUsd = (
       }
     }
 
-    inferFallbackPricesForEvent(event);
-    portfolioValueUsd = computePortfolioValueUsd(event.timeSec);
+    portfolioValueUsd = computePortfolioValueUsd(event.timeSec) + lockedProtocolUsd;
   }
 
   const endSec = Math.max(lastTimeSec, Math.floor(nowSec));
@@ -945,16 +1014,83 @@ const computeHevmTwabUsd = (
   if (durationSec <= 0) {
     return {
       twab: portfolioValueUsd > 0 ? portfolioValueUsd : null,
-      inferredAssetCount: inferredAssets.size,
+      inferredAssetCount: 0,
       unpricedAssetCount: unpricedAssets.size,
     };
   }
 
   return {
     twab: cumulativeBalanceTime / durationSec,
-    inferredAssetCount: inferredAssets.size,
+    inferredAssetCount: 0,
     unpricedAssetCount: unpricedAssets.size,
   };
+};
+
+const buildProtocolInteractions = (
+  target: string,
+  normalTxs: AccountTx[],
+  sentAccountTxs: AccountTx[],
+  receivedAccountTxs: AccountTx[],
+  sentTokenTxs: TokenTx[],
+  receivedTokenTxs: TokenTx[],
+  priceContext: HistoricalPriceContext
+): ProtocolInteraction[] => {
+  const sentContractCalls = new Set<string>();
+  for (const tx of normalTxs) {
+    const input = tx.input.trim().toLowerCase();
+    if (tx.from !== target) continue;
+    if (!input || input === "0x") continue;
+    if (!tx.to || tx.to === target || tx.to === "0x0000000000000000000000000000000000000000") continue;
+    sentContractCalls.add(tx.hash);
+  }
+
+  const byHash = new Map<string, { timeSec: number; sentUsd: number; receivedUsd: number }>();
+  const addSent = (hash: string, timeSec: number, usd: number) => {
+    if (!sentContractCalls.has(hash) || usd <= 0) return;
+    const row = byHash.get(hash) ?? { timeSec, sentUsd: 0, receivedUsd: 0 };
+    row.timeSec = Math.min(row.timeSec, timeSec);
+    row.sentUsd += usd;
+    byHash.set(hash, row);
+  };
+  const addReceived = (hash: string, timeSec: number, usd: number) => {
+    if (!sentContractCalls.has(hash) || usd <= 0) return;
+    const row = byHash.get(hash) ?? { timeSec, sentUsd: 0, receivedUsd: 0 };
+    row.timeSec = Math.min(row.timeSec, timeSec);
+    row.receivedUsd += usd;
+    byHash.set(hash, row);
+  };
+
+  for (const tx of sentAccountTxs) {
+    const price = priceAtTimeSec(priceContext.nativeSeries, tx.timeSec);
+    if (price > 0 && tx.valueNative > 0) addSent(tx.hash, tx.timeSec, tx.valueNative * price);
+  }
+  for (const tx of receivedAccountTxs) {
+    const price = priceAtTimeSec(priceContext.nativeSeries, tx.timeSec);
+    if (price > 0 && tx.valueNative > 0) addReceived(tx.hash, tx.timeSec, tx.valueNative * price);
+  }
+
+  const tokenUsd = (tx: TokenTx): number => {
+    if (tx.value <= 0) return 0;
+    if (isStableSymbol(tx.symbol)) return tx.value;
+    if (isHypeLikeSymbol(tx.symbol)) {
+      const price = priceAtTimeSec(priceContext.nativeSeries, tx.timeSec);
+      return price > 0 ? tx.value * price : 0;
+    }
+    const series = priceContext.tokenSeriesByContract.get(normalizeAddress(tx.contractAddress));
+    if (!series || series.length === 0) return 0;
+    const price = priceAtTimeSec(series, tx.timeSec);
+    return price > 0 ? tx.value * price : 0;
+  };
+  for (const tx of sentTokenTxs) addSent(tx.hash, tx.timeSec, tokenUsd(tx));
+  for (const tx of receivedTokenTxs) addReceived(tx.hash, tx.timeSec, tokenUsd(tx));
+
+  const interactions: ProtocolInteraction[] = [];
+  for (const row of byHash.values()) {
+    const netOut = row.sentUsd - row.receivedUsd;
+    if (!Number.isFinite(netOut) || Math.abs(netOut) < 1e-9) continue;
+    interactions.push({ timeSec: row.timeSec, deltaUsd: netOut });
+  }
+  return interactions.sort((a, b) => a.timeSec - b.timeSec);
 };
 
 const computeContractsCount = (sentAccountTxs: AccountTx[]) => {
@@ -1045,6 +1181,8 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const uniqueActivity = computeUniqueActivity(dedupedSentAccountTxs);
   const volumeUsd = computeVolumeUsd(dedupedSentAccountTxs, dedupedSentTokenTxs, priceContext);
   const bridgeVolumeUsd = computeBridgeVolumeUsd(dedupedReceivedAccountTxs, dedupedReceivedTokenTxs, priceContext);
+  const hevmVolumeSeries = computeHevmVolumeSeries(dedupedSentAccountTxs, dedupedSentTokenTxs, priceContext);
+  const hevmFeesPaidUsd = computeHevmFeesPaidUsd(dedupedSentAccountTxs, priceContext);
   const contractsCount = computeContractsCount(dedupedSentAccountTxs);
   const balanceEvents = buildBalanceEvents(
     target,
@@ -1054,7 +1192,16 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     dedupedSentTokenTxs,
     dedupedReceivedTokenTxs
   );
-  const twabResult = computeHevmTwabUsd(balanceEvents, priceContext, endTime / 1000);
+  const protocolInteractions = buildProtocolInteractions(
+    target,
+    normalTxs,
+    dedupedSentAccountTxs,
+    dedupedReceivedAccountTxs,
+    dedupedSentTokenTxs,
+    dedupedReceivedTokenTxs,
+    priceContext
+  );
+  const twabResult = computeHevmTwabUsd(balanceEvents, protocolInteractions, priceContext, endTime / 1000);
 
   let firstTxTimeSec: number | null = null;
   if (normalTxs.length > 0) {
@@ -1068,6 +1215,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const stats: HevmComputed = {
     twab: twabResult.twab,
     volume: volumeUsd,
+    feesPaid: hevmFeesPaidUsd,
     contractsCount,
     activeDays: uniqueActivity.uniqueDays,
     activeMonths: uniqueActivity.uniqueMonths,
@@ -1075,10 +1223,19 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     bridgeVolume: bridgeVolumeUsd,
     txCount: dedupedSentAccountTxs.length,
     firstTxTime: firstTxTimeSec ? firstTxTimeSec * 1000 : null,
+    charts: {
+      volume: hevmVolumeSeries,
+    },
   };
 
   warnings.push(
     "TWAB is now computed from reconstructed HyperEVM balances over time (normal tx + token tx + internal tx), including LP/lending position tokens when observable."
+  );
+  warnings.push(
+    "TWAB uses conservative pricing only (stablecoins, HYPE, and tokens with historical price series). Unpriced assets are excluded rather than inferred."
+  );
+  warnings.push(
+    "HEVM TWAB additionally tracks net USD locked in contract interactions (tx with calldata), so LP/lending deposits are counted even when no clear position token pricing is available."
   );
   warnings.push("HEVM metrics are now computed from HyperEVM explorer account transactions (txlist/tokentx/internal).");
   warnings.push(

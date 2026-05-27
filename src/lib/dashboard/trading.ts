@@ -14,6 +14,7 @@ import { readStringKeys, toFiniteNumber } from "@/lib/dashboard/shared";
 export type TradingBucket = {
   volume: number;
   pnl: number;
+  feesPaid: number;
   wins: number;
   losses: number;
   trades: number;
@@ -35,6 +36,13 @@ export type TradingSummary = {
     xyz: number;
     perps: number;
   };
+  charts: {
+    outcomes: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
+    xyz: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
+    perps: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
+    spot: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+    unit: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+  };
 };
 
 export type TradingApiResult = TradingSummary & {
@@ -49,6 +57,16 @@ export type TradingApiResult = TradingSummary & {
   };
 };
 
+type PortfolioHistoryPoint = [number, string];
+type PortfolioRange = {
+  accountValueHistory?: PortfolioHistoryPoint[];
+  spotState?: {
+    accountValueHistory?: PortfolioHistoryPoint[];
+  };
+  [key: string]: unknown;
+};
+type PortfolioResponse = Array<[string, PortfolioRange]>;
+
 type CoinResolver = (rawCoin: string) => string;
 
 type TradingClassificationContext = {
@@ -60,6 +78,7 @@ type TradingClassificationContext = {
 const EMPTY_BUCKET = (): TradingBucket => ({
   volume: 0,
   pnl: 0,
+  feesPaid: 0,
   wins: 0,
   losses: 0,
   trades: 0,
@@ -74,12 +93,15 @@ const fillVolume = (fill: HyperliquidFill) => {
 };
 
 const fillPnl = (fill: HyperliquidFill) => toFiniteNumber(readStringKeys(fill, ["closedPnl", "closed_pnl", "pnl"]));
+const fillFeePaid = (fill: HyperliquidFill) => abs(toFiniteNumber(readStringKeys(fill, ["fee", "fees"])));
 
 const update = (bucket: TradingBucket, fill: HyperliquidFill) => {
   const volume = fillVolume(fill);
   const pnl = fillPnl(fill);
+  const feePaid = fillFeePaid(fill);
   bucket.volume += volume;
   bucket.pnl += pnl;
+  bucket.feesPaid += feePaid;
   bucket.trades += 1;
   if (pnl > 0) bucket.wins += 1;
   if (pnl < 0) bucket.losses += 1;
@@ -251,6 +273,77 @@ const isStableQuote = (asset: string) => {
   return normalized.startsWith("USD");
 };
 
+const utcDayKey = (timestampMs: number): string => {
+  const d = new Date(timestampMs);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0, 10);
+};
+
+const utcMonthKey = (timestampMs: number): string => {
+  const d = new Date(timestampMs);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0, 7);
+};
+
+const utcWeekKey = (timestampMs: number): string => {
+  const d = new Date(timestampMs);
+  if (Number.isNaN(d.getTime())) return "";
+  const day = d.getUTCDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setUTCDate(d.getUTCDate() + diff);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.toISOString().slice(0, 10);
+};
+
+const periodKeyByGranularity = (timestampMs: number, granularity: "day" | "week" | "month") => {
+  if (granularity === "day") return utcDayKey(timestampMs);
+  if (granularity === "week") return utcWeekKey(timestampMs);
+  return utcMonthKey(timestampMs);
+};
+
+const emptyPnlSeriesMaps = () => ({
+  day: new Map<string, { volume: number; pnl: number }>(),
+  week: new Map<string, { volume: number; pnl: number }>(),
+  month: new Map<string, { volume: number; pnl: number }>(),
+});
+
+const emptyVolumeSeriesMaps = () => ({
+  day: new Map<string, number>(),
+  week: new Map<string, number>(),
+  month: new Map<string, number>(),
+});
+
+const computeTwabFromHistory = (rows: PortfolioHistoryPoint[], endTimeMs: number): number | null => {
+  const points = rows
+    .map((row) => {
+      if (!Array.isArray(row) || row.length < 2) return null;
+      const t = Math.floor(toFiniteNumber(row[0]));
+      const v = toFiniteNumber(row[1]);
+      if (t <= 0 || !Number.isFinite(v)) return null;
+      return { t, v };
+    })
+    .filter((row): row is { t: number; v: number } => row !== null)
+    .sort((a, b) => a.t - b.t);
+  if (points.length === 0) return null;
+
+  let area = 0;
+  let lastT = points[0].t;
+  let lastV = points[0].v;
+  for (let i = 1; i < points.length; i += 1) {
+    const p = points[i];
+    if (p.t <= lastT) continue;
+    area += lastV * (p.t - lastT);
+    lastT = p.t;
+    lastV = p.v;
+  }
+  const end = Math.max(lastT, Math.floor(endTimeMs));
+  if (end > lastT) area += lastV * (end - lastT);
+  const duration = Math.max(0, end - points[0].t);
+  if (duration <= 0) return lastV > 0 ? lastV : null;
+  const twab = area / duration;
+  return twab > 0 ? twab : null;
+};
+
 const parseSpotPair = (coinUpper: string): { base: string; quote: string } | null => {
   const raw = coinUpper.trim().toUpperCase();
   if (!raw) return null;
@@ -402,6 +495,11 @@ export const summarizeTradingFills = (
   const perps = EMPTY_BUCKET();
   let spotVolume = 0;
   let unitVolume = 0;
+  const outcomesSeries = emptyPnlSeriesMaps();
+  const xyzSeries = emptyPnlSeriesMaps();
+  const perpsSeries = emptyPnlSeriesMaps();
+  const spotSeries = emptyVolumeSeriesMaps();
+  const unitSeries = emptyVolumeSeriesMaps();
   const classificationContext: TradingClassificationContext = context ?? {
     knownSpotCoins: new Set<string>(),
     knownPerpCoins: new Set<string>(),
@@ -415,25 +513,57 @@ export const summarizeTradingFills = (
     const rawCoinUpper = rawCoin.toUpperCase();
     const dirUpper = readStringKeys(fill, ["dir", "side"]).toUpperCase();
     const volume = fillVolume(fill);
+    const pnl = fillPnl(fill);
+    const timeMs = getFillTime(fill);
     const outcomeFill = isOutcomesCoin(coinUpper, rawCoinUpper, dirUpper, classificationContext);
+
+    const addPnlPoint = (
+      target: ReturnType<typeof emptyPnlSeriesMaps>,
+      pointVolume: number,
+      pointPnl: number
+    ) => {
+      if (timeMs <= 0) return;
+      for (const granularity of ["day", "week", "month"] as const) {
+        const key = periodKeyByGranularity(timeMs, granularity);
+        if (!key) continue;
+        const prev = target[granularity].get(key) ?? { volume: 0, pnl: 0 };
+        target[granularity].set(key, {
+          volume: prev.volume + pointVolume,
+          pnl: prev.pnl + pointPnl,
+        });
+      }
+    };
+    const addVolumePoint = (target: ReturnType<typeof emptyVolumeSeriesMaps>, pointVolume: number) => {
+      if (timeMs <= 0) return;
+      for (const granularity of ["day", "week", "month"] as const) {
+        const key = periodKeyByGranularity(timeMs, granularity);
+        if (!key) continue;
+        target[granularity].set(key, (target[granularity].get(key) ?? 0) + pointVolume);
+      }
+    };
 
     if (outcomeFill) {
       update(outcomes, fill);
+      addPnlPoint(outcomesSeries, volume, pnl);
     }
 
     if (isXyzCoin(coinUpper)) {
       update(xyz, fill);
+      addPnlPoint(xyzSeries, volume, pnl);
     }
 
     if (isSpotTrade(coinUpper, rawCoinUpper, classificationContext) && !outcomeFill) {
       spotVolume += volume;
+      addVolumePoint(spotSeries, volume);
       if (isUnitCoin(coinUpper)) {
         unitVolume += volume;
+        addVolumePoint(unitSeries, volume);
       }
     }
 
     if (isPerpTrade(dirUpper, coinUpper, rawCoinUpper, classificationContext)) {
       update(perps, fill);
+      addPnlPoint(perpsSeries, volume, pnl);
     }
   }
 
@@ -455,6 +585,33 @@ export const summarizeTradingFills = (
       outcomes: winrate(outcomes),
       xyz: winrate(xyz),
       perps: winrate(perps),
+    },
+    charts: {
+      outcomes: {
+        day: [...outcomesSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+        week: [...outcomesSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+        month: [...outcomesSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+      },
+      xyz: {
+        day: [...xyzSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+        week: [...xyzSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+        month: [...xyzSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+      },
+      perps: {
+        day: [...perpsSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+        week: [...perpsSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+        month: [...perpsSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+      },
+      spot: {
+        day: [...spotSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+        week: [...spotSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+        month: [...spotSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+      },
+      unit: {
+        day: [...unitSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+        week: [...unitSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+        month: [...unitSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+      },
     },
   };
 };
@@ -518,8 +675,24 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
     knownPerpCoins: buildPerpCoinSet(perpMeta),
     knownOutcomeCoins: outcomeMeta ? buildOutcomeCoinSet(outcomeMeta) : new Set<string>(),
   }, endTime);
+  let spotTwab = summary.totals.spotTwab;
+  let portfolioRequestUsed = 0;
+  try {
+    portfolioRequestUsed = 1;
+    const portfolio = await fetchHyperliquidInfo<PortfolioResponse>({ type: "portfolio", user: address });
+    const allTime = portfolio.find((row) => Array.isArray(row) && row[0] === "allTime")?.[1];
+    const officialSpotHistory = allTime?.spotState?.accountValueHistory ?? [];
+    const officialSpotTwab = computeTwabFromHistory(officialSpotHistory, endTime);
+    if (officialSpotTwab !== null) {
+      spotTwab = officialSpotTwab;
+      warnings.push("Spot TWAB now uses Hyperliquid portfolio spotState.accountValueHistory (official source).");
+    }
+  } catch {
+    warnings.push("Could not load portfolio spotState history, so Spot TWAB uses fill-based reconstruction fallback.");
+  }
+  summary.totals.spotTwab = spotTwab;
   if (summary.totals.spotTwab === null) {
-    warnings.push("Spot TWAB was unavailable (not enough spot fills with usable timestamp/price/side).");
+    warnings.push("Spot TWAB was unavailable (official history missing and fallback had insufficient data).");
   }
 
   return {
@@ -527,7 +700,7 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
     address,
     period: { startTime, endTime },
     meta: {
-      requestsUsed: rangeResult.requestsUsed + (usedFallback ? 1 : 0) + 2 + outcomeMetaRequestUsed,
+      requestsUsed: rangeResult.requestsUsed + (usedFallback ? 1 : 0) + 2 + outcomeMetaRequestUsed + portfolioRequestUsed,
       usedFallback,
       truncated: rangeResult.truncated,
       warnings,

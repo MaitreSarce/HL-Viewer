@@ -73,7 +73,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Spot TWAB (USD)"
-          explanation="Computed from spot fills as a time-weighted USD balance. The app reconstructs spot balances from `BUY/SELL` direction (`side` B/A fallback), updates base/quote balances per fill, and values them with fill-derived USD prices (direct stable quotes and propagated cross-prices). Between fills, last observed prices are held constant."
+          explanation="Primary method: Hyperliquid `portfolio` -> `allTime.spotState.accountValueHistory` (official sampled spot account value history), integrated as time-weighted average. Fallback method (if portfolio history is unavailable): fill-based reconstruction."
         />
         <Metric
           name="Unit Volume"
@@ -86,6 +86,10 @@ export default function DetailsPage() {
         <Metric
           name="Fills counted"
           explanation="Number of deduplicated fills returned by the API flow."
+        />
+        <Metric
+          name="Fees paid (Outcomes / XYZ / Perps)"
+          explanation="For each bucket, fees are summed from fill `fee` (absolute value), on the same fills included in that bucket."
         />
         <p>
           Important: categories are not exclusive. The same fill can contribute to multiple buckets (for example Outcomes and
@@ -100,11 +104,15 @@ export default function DetailsPage() {
 
         <Metric
           name="TWAB"
-          explanation="Computed as a time-weighted average USD balance reconstructed from HyperEVM flows (normal tx + token tx + internal tx). The engine rebuilds per-asset balances over time and applies historical USD prices at each step. LP/lending positions are included when they emit position/share tokens; for unpriced position tokens, a fallback price can be inferred from same-transaction valued legs."
+          explanation="Computed as a time-weighted average USD balance reconstructed from HyperEVM flows (normal tx + token tx + internal tx). The value includes wallet balances plus net USD value locked in contract interactions (outgoing tx with calldata), which captures LP/lending deposits across protocols. Valuation is conservative: only stablecoins, HYPE-like assets, and tokens with historical USD series are priced; unpriced assets are excluded."
         />
         <Metric
           name="Volume (USD)"
           explanation="Sum of outgoing account tx + outgoing token transfers, valued at historical USD price at transfer time. Native and HYPE-like assets use historical HYPE/USD (CoinGecko); stablecoins are counted at nominal USD; other tokens use contract historical series when available."
+        />
+        <Metric
+          name="Fees paid (USD)"
+          explanation="Sum of outgoing transaction gas fees (`gasUsed * gasPrice`) converted to USD using historical HYPE/USD at each transaction timestamp."
         />
         <Metric
           name="Different contracts"
