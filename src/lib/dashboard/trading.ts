@@ -630,12 +630,12 @@ const signedSpotSize = (fill: HyperliquidFill, dirUpper: string): number => {
   const size = abs(toFiniteNumber(readStringKeys(fill, ["sz", "size", "qty"])));
   if (size <= 0) return 0;
 
+  if (dirUpper.includes("BUY")) return size;
+  if (dirUpper.includes("SELL")) return -size;
+
   const sideUpper = readStringKeys(fill, ["side"]).toUpperCase();
   if (sideUpper === "B") return size;
   if (sideUpper === "A") return -size;
-
-  if (dirUpper.includes("BUY")) return size;
-  if (dirUpper.includes("SELL")) return -size;
   return 0;
 };
 
