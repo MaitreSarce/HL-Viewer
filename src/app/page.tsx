@@ -557,17 +557,29 @@ export default function Home() {
                 />
               </div>
               <div className="grid gap-4 md:grid-cols-2">
-                <DualHistogramCard
-                  title={`Outcomes Volume + PNL (${histGranularity})`}
-                  rows={trading.charts.outcomes[histGranularity].map((row) => ({ label: row.period, volume: row.volume, pnl: row.pnl }))}
+                <HistogramCard
+                  title={`Outcomes Volume (${histGranularity})`}
+                  rows={trading.charts.outcomes[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
                 />
-                <DualHistogramCard
-                  title={`XYZ Volume + PNL (${histGranularity})`}
-                  rows={trading.charts.xyz[histGranularity].map((row) => ({ label: row.period, volume: row.volume, pnl: row.pnl }))}
+                <HistogramCard
+                  title={`Outcomes PNL (${histGranularity})`}
+                  rows={trading.charts.outcomes[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
                 />
-                <DualHistogramCard
-                  title={`Perps Volume + PNL (${histGranularity})`}
-                  rows={trading.charts.perps[histGranularity].map((row) => ({ label: row.period, volume: row.volume, pnl: row.pnl }))}
+                <HistogramCard
+                  title={`XYZ Volume (${histGranularity})`}
+                  rows={trading.charts.xyz[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
+                />
+                <HistogramCard
+                  title={`XYZ PNL (${histGranularity})`}
+                  rows={trading.charts.xyz[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
+                />
+                <HistogramCard
+                  title={`Perps Volume (${histGranularity})`}
+                  rows={trading.charts.perps[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
+                />
+                <HistogramCard
+                  title={`Perps PNL (${histGranularity})`}
+                  rows={trading.charts.perps[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
                 />
                 <HistogramCard
                   title={`Spot Volume (${histGranularity})`}
