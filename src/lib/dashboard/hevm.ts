@@ -19,6 +19,7 @@ const INTERNAL_OFFSET = 1000;
 const COINGECKO_MAX_CONTRACT_SERIES = 24;
 const COINGECKO_REQUEST_DELAY_MS = 300;
 const SYSTEM_BRIDGE_ADDRESS = "0x2222222222222222222222222222222222222222";
+const NATIVE_ASSET_KEY = "__native_hype__";
 
 type HevmComputed = {
   twab: number | null;
@@ -90,6 +91,24 @@ type HistoricalPriceContext = {
   requestsUsed: number;
   unavailableContracts: Set<string>;
   skippedContracts: Set<string>;
+};
+
+type BalanceAsset = {
+  key: string;
+  symbol: string;
+  contractAddress: string;
+  isNative: boolean;
+};
+
+type BalanceDelta = {
+  asset: BalanceAsset;
+  amount: number;
+};
+
+type BalanceEvent = {
+  hash: string;
+  timeSec: number;
+  deltas: BalanceDelta[];
 };
 
 const NO_TX_MESSAGES = new Set([
@@ -219,6 +238,32 @@ const isHypeLikeSymbol = (symbol: string) => {
   const upper = normalizeSymbol(symbol);
   return upper === "HYPE" || upper === "WHYPE" || upper === "KHYPE" || upper === "STHYPE";
 };
+
+const createTokenAsset = (symbol: string, contractAddress: string): BalanceAsset => {
+  const normalizedContract = normalizeAddress(contractAddress);
+  if (normalizedContract) {
+    return {
+      key: `token:${normalizedContract}`,
+      symbol,
+      contractAddress: normalizedContract,
+      isNative: false,
+    };
+  }
+  const normalized = normalizeSymbol(symbol);
+  return {
+    key: normalized ? `symbol:${normalized}` : `symbol:unknown`,
+    symbol,
+    contractAddress: "",
+    isNative: false,
+  };
+};
+
+const createNativeAsset = (): BalanceAsset => ({
+  key: NATIVE_ASSET_KEY,
+  symbol: "HYPE",
+  contractAddress: "",
+  isNative: true,
+});
 
 const utcWeekKey = (timestampMs: number): string => {
   const date = new Date(timestampMs);
@@ -693,6 +738,225 @@ const computeBridgeVolumeUsd = (
   return bridgeVolumeUsd;
 };
 
+const resolveAssetPriceUsd = (
+  asset: BalanceAsset,
+  timeSec: number,
+  priceContext: HistoricalPriceContext,
+  fallbackPriceByAsset: Map<string, number>
+): number => {
+  if (asset.isNative) {
+    return priceAtTimeSec(priceContext.nativeSeries, timeSec);
+  }
+  if (isStableSymbol(asset.symbol)) {
+    return 1;
+  }
+  if (isHypeLikeSymbol(asset.symbol)) {
+    return priceAtTimeSec(priceContext.nativeSeries, timeSec);
+  }
+  if (asset.contractAddress) {
+    const series = priceContext.tokenSeriesByContract.get(asset.contractAddress);
+    if (series && series.length > 0) {
+      const price = priceAtTimeSec(series, timeSec);
+      if (price > 0) return price;
+    }
+  }
+  const fallback = fallbackPriceByAsset.get(asset.key) ?? 0;
+  return fallback > 0 ? fallback : 0;
+};
+
+const buildBalanceEvents = (
+  target: string,
+  sentAccountTxs: AccountTx[],
+  receivedAccountTxs: AccountTx[],
+  internalTxs: AccountTx[],
+  sentTokenTxs: TokenTx[],
+  receivedTokenTxs: TokenTx[]
+): BalanceEvent[] => {
+  const eventMap = new Map<
+    string,
+    {
+      hash: string;
+      timeSec: number;
+      deltas: Map<string, BalanceDelta>;
+    }
+  >();
+
+  const pushDelta = (hash: string, timeSec: number, asset: BalanceAsset, amount: number) => {
+    if (!Number.isFinite(amount) || abs(amount) <= 1e-12 || timeSec <= 0) return;
+    const eventId = `${timeSec}:${hash || "no-hash"}`;
+    const existingEvent = eventMap.get(eventId);
+    if (!existingEvent) {
+      eventMap.set(eventId, {
+        hash: hash || eventId,
+        timeSec,
+        deltas: new Map([[asset.key, { asset, amount }]]),
+      });
+      return;
+    }
+    const existingDelta = existingEvent.deltas.get(asset.key);
+    if (existingDelta) {
+      existingDelta.amount += amount;
+    } else {
+      existingEvent.deltas.set(asset.key, { asset, amount });
+    }
+  };
+
+  for (const tx of sentAccountTxs) {
+    if (tx.valueNative > 0) {
+      pushDelta(tx.hash, tx.timeSec, createNativeAsset(), -tx.valueNative);
+    }
+  }
+  for (const tx of receivedAccountTxs) {
+    if (tx.valueNative > 0) {
+      pushDelta(tx.hash, tx.timeSec, createNativeAsset(), tx.valueNative);
+    }
+  }
+
+  for (const tx of internalTxs) {
+    if (tx.valueNative <= 0 || tx.from === tx.to) continue;
+    if (tx.from === target) {
+      pushDelta(tx.hash, tx.timeSec, createNativeAsset(), -tx.valueNative);
+    }
+    if (tx.to === target) {
+      pushDelta(tx.hash, tx.timeSec, createNativeAsset(), tx.valueNative);
+    }
+  }
+
+  for (const tx of sentTokenTxs) {
+    if (tx.value > 0) {
+      pushDelta(tx.hash, tx.timeSec, createTokenAsset(tx.symbol, tx.contractAddress), -tx.value);
+    }
+  }
+  for (const tx of receivedTokenTxs) {
+    if (tx.value > 0) {
+      pushDelta(tx.hash, tx.timeSec, createTokenAsset(tx.symbol, tx.contractAddress), tx.value);
+    }
+  }
+
+  return [...eventMap.values()]
+    .map((event) => ({
+      hash: event.hash,
+      timeSec: event.timeSec,
+      deltas: [...event.deltas.values()].filter((delta) => Number.isFinite(delta.amount) && abs(delta.amount) > 1e-12),
+    }))
+    .filter((event) => event.timeSec > 0 && event.deltas.length > 0)
+    .sort((a, b) => {
+      if (a.timeSec !== b.timeSec) return a.timeSec - b.timeSec;
+      return a.hash.localeCompare(b.hash);
+    });
+};
+
+const computeHevmTwabUsd = (
+  events: BalanceEvent[],
+  priceContext: HistoricalPriceContext,
+  nowSec: number
+): { twab: number | null; inferredAssetCount: number; unpricedAssetCount: number } => {
+  if (events.length === 0) {
+    return { twab: null, inferredAssetCount: 0, unpricedAssetCount: 0 };
+  }
+
+  const balances = new Map<string, number>();
+  const assetsByKey = new Map<string, BalanceAsset>();
+  const fallbackPriceByAsset = new Map<string, number>();
+  const inferredAssets = new Set<string>();
+  const unpricedAssets = new Set<string>();
+
+  const computePortfolioValueUsd = (timeSec: number): number => {
+    let valueUsd = 0;
+    for (const [assetKey, balance] of balances.entries()) {
+      if (!Number.isFinite(balance) || balance <= 0) continue;
+      const asset = assetsByKey.get(assetKey);
+      if (!asset) continue;
+      const priceUsd = resolveAssetPriceUsd(asset, timeSec, priceContext, fallbackPriceByAsset);
+      if (priceUsd > 0) {
+        valueUsd += balance * priceUsd;
+      } else {
+        unpricedAssets.add(assetKey);
+      }
+    }
+    return valueUsd;
+  };
+
+  const inferFallbackPricesForEvent = (event: BalanceEvent) => {
+    let pricedLegUsd = 0;
+    const unpricedLegs: BalanceDelta[] = [];
+
+    for (const delta of event.deltas) {
+      const amountAbs = abs(delta.amount);
+      if (amountAbs <= 0) continue;
+      const priceUsd = resolveAssetPriceUsd(delta.asset, event.timeSec, priceContext, fallbackPriceByAsset);
+      if (priceUsd > 0) {
+        pricedLegUsd += amountAbs * priceUsd;
+      } else {
+        unpricedLegs.push(delta);
+      }
+    }
+
+    if (pricedLegUsd <= 0 || unpricedLegs.length !== 1) return;
+
+    const leg = unpricedLegs[0];
+    const amountAbs = abs(leg.amount);
+    if (amountAbs <= 0) return;
+
+    const inferredPriceUsd = pricedLegUsd / amountAbs;
+    if (Number.isFinite(inferredPriceUsd) && inferredPriceUsd > 0) {
+      fallbackPriceByAsset.set(leg.asset.key, inferredPriceUsd);
+      inferredAssets.add(leg.asset.key);
+      unpricedAssets.delete(leg.asset.key);
+    }
+  };
+
+  let cumulativeBalanceTime = 0;
+  let portfolioValueUsd = 0;
+  let firstTimeSec = events[0].timeSec;
+  let lastTimeSec = firstTimeSec;
+  let initialized = false;
+
+  for (const event of events) {
+    if (!initialized) {
+      firstTimeSec = event.timeSec;
+      lastTimeSec = event.timeSec;
+      initialized = true;
+    } else if (event.timeSec > lastTimeSec) {
+      cumulativeBalanceTime += portfolioValueUsd * (event.timeSec - lastTimeSec);
+      lastTimeSec = event.timeSec;
+    }
+
+    for (const delta of event.deltas) {
+      assetsByKey.set(delta.asset.key, delta.asset);
+      const nextBalance = (balances.get(delta.asset.key) ?? 0) + delta.amount;
+      if (abs(nextBalance) <= 1e-12) {
+        balances.delete(delta.asset.key);
+      } else {
+        balances.set(delta.asset.key, nextBalance);
+      }
+    }
+
+    inferFallbackPricesForEvent(event);
+    portfolioValueUsd = computePortfolioValueUsd(event.timeSec);
+  }
+
+  const endSec = Math.max(lastTimeSec, Math.floor(nowSec));
+  if (endSec > lastTimeSec) {
+    cumulativeBalanceTime += portfolioValueUsd * (endSec - lastTimeSec);
+  }
+
+  const durationSec = Math.max(0, endSec - firstTimeSec);
+  if (durationSec <= 0) {
+    return {
+      twab: portfolioValueUsd > 0 ? portfolioValueUsd : null,
+      inferredAssetCount: inferredAssets.size,
+      unpricedAssetCount: unpricedAssets.size,
+    };
+  }
+
+  return {
+    twab: cumulativeBalanceTime / durationSec,
+    inferredAssetCount: inferredAssets.size,
+    unpricedAssetCount: unpricedAssets.size,
+  };
+};
+
 const computeContractsCount = (sentAccountTxs: AccountTx[]) => {
   const contracts = new Set<string>();
   for (const tx of sentAccountTxs) {
@@ -763,11 +1027,17 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     receivedTokenTxs,
     (tx) => `${tx.hash}:${tx.blockNumber}:${tx.timeSec}:${tx.contractAddress}:${tx.symbol}:${tx.value}`
   );
+  const dedupedInternalTxs = dedupeByKey(
+    internalTxs.filter((tx) => tx.from !== tx.to),
+    (tx) => `${tx.hash}:${tx.blockNumber}:${tx.timeSec}:${tx.from}:${tx.to}:${tx.valueNative}`
+  );
+  const dedupedSentInternalTxs = dedupedInternalTxs.filter((tx) => tx.from === target);
+  const dedupedReceivedInternalTxs = dedupedInternalTxs.filter((tx) => tx.to === target);
 
   const priceContext = await buildHistoricalPriceContext(
-    dedupedSentAccountTxs,
+    [...dedupedSentAccountTxs, ...dedupedSentInternalTxs],
     dedupedSentTokenTxs,
-    dedupedReceivedAccountTxs,
+    [...dedupedReceivedAccountTxs, ...dedupedReceivedInternalTxs],
     dedupedReceivedTokenTxs
   );
   requestsUsed += priceContext.requestsUsed;
@@ -776,6 +1046,15 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const volumeUsd = computeVolumeUsd(dedupedSentAccountTxs, dedupedSentTokenTxs, priceContext);
   const bridgeVolumeUsd = computeBridgeVolumeUsd(dedupedReceivedAccountTxs, dedupedReceivedTokenTxs, priceContext);
   const contractsCount = computeContractsCount(dedupedSentAccountTxs);
+  const balanceEvents = buildBalanceEvents(
+    target,
+    dedupedSentAccountTxs,
+    dedupedReceivedAccountTxs,
+    dedupedInternalTxs,
+    dedupedSentTokenTxs,
+    dedupedReceivedTokenTxs
+  );
+  const twabResult = computeHevmTwabUsd(balanceEvents, priceContext, endTime / 1000);
 
   let firstTxTimeSec: number | null = null;
   if (normalTxs.length > 0) {
@@ -787,7 +1066,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   }
 
   const stats: HevmComputed = {
-    twab: null,
+    twab: twabResult.twab,
     volume: volumeUsd,
     contractsCount,
     activeDays: uniqueActivity.uniqueDays,
@@ -798,11 +1077,23 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     firstTxTime: firstTxTimeSec ? firstTxTimeSec * 1000 : null,
   };
 
-  warnings.push("TWAB is not exposed by a stable public endpoint, so it is currently reported as unavailable.");
+  warnings.push(
+    "TWAB is now computed from reconstructed HyperEVM balances over time (normal tx + token tx + internal tx), including LP/lending position tokens when observable."
+  );
   warnings.push("HEVM metrics are now computed from HyperEVM explorer account transactions (txlist/tokentx/internal).");
   warnings.push(
     "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
   );
+  if (twabResult.inferredAssetCount > 0) {
+    warnings.push(
+      `TWAB pricing inferred ${twabResult.inferredAssetCount} unpriced position token(s) from same-transaction value flow (LP/lending share-token fallback).`
+    );
+  }
+  if (twabResult.unpricedAssetCount > 0) {
+    warnings.push(
+      `TWAB still has ${twabResult.unpricedAssetCount} asset(s) without USD pricing data; those balances were excluded from TWAB valuation.`
+    );
+  }
   if (priceContext.nativeSeries.length === 0) {
     warnings.push("Historical HYPE/USD series was unavailable, so native-value transfers could not be fully valued.");
   }

@@ -11,6 +11,7 @@ type TradingData = {
     xyz: { volume: number; pnl: number };
     perps: { volume: number; pnl: number };
     spotVolume: number;
+    spotTwab: number | null;
     unitVolume: number;
     totalVolume: number;
   };
@@ -272,7 +273,16 @@ export default function Home() {
                     { label: "Winrate", value: formatPct(trading.winrates.perps) },
                   ]}
                 />
-                <ZoneCard title="Spot" rows={[{ label: "Volume", value: formatUsd(trading.totals.spotVolume) }]} />
+                <ZoneCard
+                  title="Spot"
+                  rows={[
+                    { label: "Volume", value: formatUsd(trading.totals.spotVolume) },
+                    {
+                      label: "TWAB (USD)",
+                      value: trading.totals.spotTwab === null ? "N/A" : formatUsd(trading.totals.spotTwab),
+                    },
+                  ]}
+                />
                 <ZoneCard
                   title="Unit"
                   rows={[{ label: "Volume (BTC/ETH/PUMP/SOL)", value: formatUsd(trading.totals.unitVolume) }]}
@@ -309,7 +319,7 @@ export default function Home() {
                 <ZoneCard
                   title="HEVM Activity"
                   rows={[
-                    { label: "TWAB", value: hevm.stats.twab === null ? "N/A" : formatNum(hevm.stats.twab) },
+                    { label: "TWAB (USD)", value: hevm.stats.twab === null ? "N/A" : formatUsd(hevm.stats.twab) },
                     { label: "Volume", value: formatUsd(hevm.stats.volume) },
                     { label: "Different contracts", value: formatNum(hevm.stats.contractsCount) },
                     { label: "Different active days", value: formatNum(hevm.stats.activeDays) },

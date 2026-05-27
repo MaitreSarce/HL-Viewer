@@ -72,6 +72,10 @@ export default function DetailsPage() {
           explanation="A fill is counted as Spot only when coin matches known spot assets from `spotMeta` (for example `@index` or known spot pair name). Outcomes are excluded from spot even if `dir` is `BUY` or `SELL`."
         />
         <Metric
+          name="Spot TWAB (USD)"
+          explanation="Computed from spot fills as a time-weighted USD balance. The app reconstructs spot balances from `BUY/SELL` direction (`side` B/A fallback), updates base/quote balances per fill, and values them with fill-derived USD prices (direct stable quotes and propagated cross-prices). Between fills, last observed prices are held constant."
+        />
+        <Metric
           name="Unit Volume"
           explanation="Subset of Spot volume where coin contains `BTC`, `ETH`, `PUMP`, or `SOL`."
         />
@@ -96,7 +100,7 @@ export default function DetailsPage() {
 
         <Metric
           name="TWAB"
-          explanation="Currently unavailable in this app (returned as `null`) because no stable public endpoint is used for TWAB."
+          explanation="Computed as a time-weighted average USD balance reconstructed from HyperEVM flows (normal tx + token tx + internal tx). The engine rebuilds per-asset balances over time and applies historical USD prices at each step. LP/lending positions are included when they emit position/share tokens; for unpriced position tokens, a fallback price can be inferred from same-transaction valued legs."
         />
         <Metric
           name="Volume (USD)"
