@@ -1215,6 +1215,11 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
   }
 
   summary.totals.spotTwab = spotTwab;
+  if (summary.totals.spotTwab !== null && summary.totals.spotVolume > 0) {
+    const unitExposureShare = Math.max(0, Math.min(1, summary.totals.unitVolume / summary.totals.spotVolume));
+    summary.totals.unitTwab = summary.totals.spotTwab * unitExposureShare;
+    warnings.push("Unit TWAB uses exposure-share method: Spot TWAB × (Unit Volume / Spot Volume), clamped to [0,1].");
+  }
   summary.totals.vaultTwab = vaultTwab;
   if (summary.totals.spotTwab === null) {
     warnings.push("Spot TWAB was unavailable (official history missing and fallback had insufficient data).");
