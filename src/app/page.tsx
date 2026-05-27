@@ -16,6 +16,8 @@ type TradingData = {
     hypeStakingTwab: number | null;
     unitVolume: number;
     unitFeesPaid: number;
+    unitTrades: number;
+    unitTokens: string[];
     totalVolume: number;
   };
   winrates: {
@@ -602,8 +604,10 @@ export default function Home() {
                 <ZoneCard
                   title="Unit"
                   rows={[
-                    { label: "Volume (BTC/ETH/PUMP/SOL)", value: formatUsd(trading.totals.unitVolume) },
+                    { label: "Volume (Unit assets)", value: formatUsd(trading.totals.unitVolume) },
                     { label: "Fees paid", value: formatUsd(trading.totals.unitFeesPaid) },
+                    { label: "Trades", value: formatNum(trading.totals.unitTrades) },
+                    { label: "Tokens", value: trading.totals.unitTokens.join(", ") || "N/A" },
                   ]}
                 />
                 <ZoneCard
@@ -614,6 +618,9 @@ export default function Home() {
                   ]}
                 />
               </div>
+              <p className="text-xs text-slate-500">
+                TWAB legend: the value in parentheses is `TWAB × wallet age (days)`.
+              </p>
               <div className="grid gap-4 md:grid-cols-2">
                 <HistogramCard
                   title={`Outcomes Volume (${histGranularity})`}
@@ -690,6 +697,9 @@ export default function Home() {
                   ]}
                 />
               </div>
+              <p className="text-xs text-slate-500">
+                TWAB legend: the value in parentheses is `TWAB × wallet age (days)`.
+              </p>
               <div className="grid gap-4 md:grid-cols-2">
                 <HistogramCard
                   title={`HEVM Volume (${histGranularity})`}

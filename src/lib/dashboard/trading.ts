@@ -33,6 +33,8 @@ export type TradingSummary = {
     hypeStakingTwab: number | null;
     unitVolume: number;
     unitFeesPaid: number;
+    unitTrades: number;
+    unitTokens: string[];
     totalVolume: number;
   };
   winrates: {
@@ -114,7 +116,10 @@ const fillVolume = (fill: HyperliquidFill) => {
 };
 
 const fillPnl = (fill: HyperliquidFill) => toFiniteNumber(readStringKeys(fill, ["closedPnl", "closed_pnl", "pnl"]));
-const fillFeePaid = (fill: HyperliquidFill) => abs(toFiniteNumber(readStringKeys(fill, ["fee", "fees"])));
+const fillFeePaid = (fill: HyperliquidFill) => {
+  const rawFee = toFiniteNumber(readStringKeys(fill, ["fee", "fees"]));
+  return rawFee > 0 ? rawFee : 0;
+};
 
 const update = (bucket: TradingBucket, fill: HyperliquidFill) => {
   const volume = fillVolume(fill);
@@ -267,13 +272,33 @@ const isPerpTrade = (
   );
 };
 
-const isUnitCoin = (coinUpper: string) => {
-  return (
-    coinUpper.includes("BTC") ||
-    coinUpper.includes("ETH") ||
-    coinUpper.includes("PUMP") ||
-    coinUpper.includes("SOL")
-  );
+const UNIT_TOKEN_ALIASES: Record<string, string[]> = {
+  BTC: ["BTC", "UBTC"],
+  ETH: ["ETH", "UETH"],
+  SOL: ["SOL", "USOL"],
+  PUMP: ["PUMP", "UPUMP"],
+  FARTCOIN: ["FARTCOIN", "UFART"],
+  SPXS: ["SPXS", "UUUSPX"],
+  BONK: ["BONK", "UBONK"],
+  XPL: ["XPL"],
+  ZEC: ["ZEC", "UZEC"],
+};
+
+const UNIT_TOKEN_LIST = Object.keys(UNIT_TOKEN_ALIASES);
+
+const matchUnitToken = (coinUpper: string): string | null => {
+  const parts = coinUpper
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .filter(Boolean);
+  if (parts.length === 0) return null;
+
+  for (const [symbol, aliases] of Object.entries(UNIT_TOKEN_ALIASES)) {
+    if (aliases.some((alias) => parts.includes(alias))) {
+      return symbol;
+    }
+  }
+  return null;
 };
 
 const STABLE_QUOTES = new Set([
@@ -557,6 +582,8 @@ export const summarizeTradingFills = (
   let spotFeesPaid = 0;
   let unitVolume = 0;
   let unitFeesPaid = 0;
+  let unitTrades = 0;
+  const unitTokensSeen = new Set<string>();
   const outcomesSeries = emptyPnlSeriesMaps();
   const xyzSeries = emptyPnlSeriesMaps();
   const perpsSeries = emptyPnlSeriesMaps();
@@ -619,9 +646,12 @@ export const summarizeTradingFills = (
       spotVolume += volume;
       spotFeesPaid += feePaid;
       addVolumePoint(spotSeries, volume);
-      if (isUnitCoin(coinUpper)) {
+      const unitToken = matchUnitToken(coinUpper);
+      if (unitToken) {
         unitVolume += volume;
         unitFeesPaid += feePaid;
+        unitTrades += 1;
+        unitTokensSeen.add(unitToken);
         addVolumePoint(unitSeries, volume);
       }
     }
@@ -647,6 +677,8 @@ export const summarizeTradingFills = (
       hypeStakingTwab: null,
       unitVolume,
       unitFeesPaid,
+      unitTrades,
+      unitTokens: UNIT_TOKEN_LIST.filter((token) => unitTokensSeen.has(token)),
       totalVolume,
     },
     winrates: {

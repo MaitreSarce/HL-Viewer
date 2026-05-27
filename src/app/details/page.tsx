@@ -80,8 +80,8 @@ export default function DetailsPage() {
           explanation="Computed from Hyperliquid staking-native endpoints `delegatorHistory` + `delegatorSummary` (multi-validator aware). Delegation/undelegation deltas are reconstructed over time, then TWAB is computed as a time-weighted average staked balance."
         />
         <Metric
-          name="Unit Volume"
-          explanation="Subset of Spot volume where coin contains `BTC`, `ETH`, `PUMP`, or `SOL`."
+          name="Unit Volume / Fees / Trades"
+          explanation="Subset of Spot fills where coin matches Unit token aliases (BTC/UBTC, ETH/UETH, SOL/USOL, PUMP/UPUMP, FARTCOIN/UFART, SPXS/UUUSPX, BONK/UBONK, XPL, ZEC/UZEC). Volume and fees are aggregated on those fills; fees count only positive fee values; trades is the number of matched fills."
         />
         <Metric
           name="Volume total (perps + spot + outcomes)"
@@ -93,7 +93,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Fees paid (Outcomes / XYZ / Perps)"
-          explanation="For each bucket, fees are summed from fill `fee` (absolute value), on the same fills included in that bucket."
+          explanation="For each bucket, fees are summed from fill `fee` only when `fee > 0` (actual paid fee). Negative values (maker rebates/credits) are not counted as paid fees."
         />
         <p>
           Important: categories are not exclusive. The same fill can contribute to multiple buckets (for example Outcomes and
