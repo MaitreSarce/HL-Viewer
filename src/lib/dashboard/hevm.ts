@@ -6,6 +6,7 @@ import {
   utcDayKey,
   utcMonthKey,
 } from "@/lib/dashboard/shared";
+import { computeTwabSeriesUsdFromValuePoints, computeTwabUsdFromValuePoints, TwabValuePoint } from "@/lib/dashboard/twab";
 
 const HYPERSCAN_API_URL = "https://www.hyperscan.com/api";
 const HYPEREVM_RPC_URL = "https://rpc.hyperliquid.xyz/evm";
@@ -980,14 +981,14 @@ const buildBalanceEvents = (
     });
 };
 
-const computeHevmTwabUsd = (
+const buildHevmTwabValuePoints = (
   events: BalanceEvent[],
   protocolInteractions: ProtocolInteraction[],
   priceContext: HistoricalPriceContext,
   nowSec: number
-): { twab: number | null; inferredAssetCount: number; unpricedAssetCount: number } => {
+): { points: TwabValuePoint[]; inferredAssetCount: number; unpricedAssetCount: number } => {
   if (events.length === 0) {
-    return { twab: null, inferredAssetCount: 0, unpricedAssetCount: 0 };
+    return { points: [], inferredAssetCount: 0, unpricedAssetCount: 0 };
   }
 
   const balances = new Map<string, number>();
@@ -1011,13 +1012,12 @@ const computeHevmTwabUsd = (
     return valueUsd;
   };
 
-  let cumulativeBalanceTime = 0;
   let portfolioValueUsd = 0;
   let lockedProtocolUsd = 0;
-  let firstTimeSec = events[0].timeSec;
-  let lastTimeSec = firstTimeSec;
+  let lastTimeSec = events[0].timeSec;
   let initialized = false;
   let protocolCursor = 0;
+  const points: TwabValuePoint[] = [];
 
   const applyProtocolInteractionsUntil = (timeSec: number) => {
     while (protocolCursor < protocolInteractions.length && protocolInteractions[protocolCursor].timeSec <= timeSec) {
@@ -1029,12 +1029,8 @@ const computeHevmTwabUsd = (
 
   for (const event of events) {
     if (!initialized) {
-      firstTimeSec = event.timeSec;
       lastTimeSec = event.timeSec;
       initialized = true;
-    } else if (event.timeSec > lastTimeSec) {
-      cumulativeBalanceTime += portfolioValueUsd * (event.timeSec - lastTimeSec);
-      lastTimeSec = event.timeSec;
     }
 
     applyProtocolInteractionsUntil(event.timeSec);
@@ -1049,133 +1045,22 @@ const computeHevmTwabUsd = (
     }
 
     portfolioValueUsd = computePortfolioValueUsd(event.timeSec) + lockedProtocolUsd;
-  }
-
-  const endSec = Math.max(lastTimeSec, Math.floor(nowSec));
-  if (endSec > lastTimeSec) {
-    cumulativeBalanceTime += portfolioValueUsd * (endSec - lastTimeSec);
-  }
-
-  const durationSec = Math.max(0, endSec - firstTimeSec);
-  if (durationSec <= 0) {
-    return {
-      twab: portfolioValueUsd > 0 ? portfolioValueUsd : null,
-      inferredAssetCount: 0,
-      unpricedAssetCount: unpricedAssets.size,
-    };
+    points.push({ timeSec: event.timeSec, valueUsd: portfolioValueUsd });
+    lastTimeSec = event.timeSec;
   }
 
   return {
-    twab: cumulativeBalanceTime / durationSec,
+    points,
     inferredAssetCount: 0,
     unpricedAssetCount: unpricedAssets.size,
   };
 };
 
 const computeHevmTwabSeriesUsd = (
-  events: BalanceEvent[],
-  protocolInteractions: ProtocolInteraction[],
-  priceContext: HistoricalPriceContext,
+  points: TwabValuePoint[],
   nowSec: number
 ): Record<"day" | "week" | "month" | "year", Array<{ period: string; twab: number }>> => {
-  if (events.length === 0) return { day: [], week: [], month: [], year: [] };
-
-  const balances = new Map<string, number>();
-  const assetsByKey = new Map<string, BalanceAsset>();
-  const fallbackPriceByAsset = new Map<string, number>();
-  const series = emptyTwabSeriesMaps();
-  let lockedProtocolUsd = 0;
-  let protocolCursor = 0;
-  let initialized = false;
-  let lastTimeSec = events[0].timeSec;
-  let portfolioValueUsd = 0;
-
-  const addWeighted = (
-    map: Map<string, { area: number; duration: number }>,
-    granularity: "day" | "week" | "month" | "year",
-    startSec: number,
-    endSec: number,
-    valueUsd: number
-  ) => {
-    if (endSec <= startSec) return;
-    let cursorMs = startSec * 1000;
-    const endMs = endSec * 1000;
-    while (cursorMs < endMs) {
-      const key = periodKeyByGranularity(cursorMs, granularity);
-      if (!key) break;
-      const boundary = nextPeriodStartMs(cursorMs, granularity);
-      const segEnd = Math.min(endMs, boundary);
-      const durationMs = Math.max(0, segEnd - cursorMs);
-      if (durationMs > 0) {
-        const prev = map.get(key) ?? { area: 0, duration: 0 };
-        prev.area += valueUsd * (durationMs / 1000);
-        prev.duration += durationMs / 1000;
-        map.set(key, prev);
-      }
-      cursorMs = segEnd;
-    }
-  };
-
-  const computePortfolioValueUsd = (timeSec: number): number => {
-    let valueUsd = 0;
-    for (const [assetKey, balance] of balances.entries()) {
-      if (balance <= 0) continue;
-      const asset = assetsByKey.get(assetKey);
-      if (!asset) continue;
-      const priceUsd = resolveAssetPriceUsd(asset, timeSec, priceContext, fallbackPriceByAsset);
-      if (priceUsd <= 0) continue;
-      valueUsd += balance * priceUsd;
-    }
-    return valueUsd;
-  };
-
-  const applyProtocolInteractionsUntil = (timeSec: number) => {
-    while (protocolCursor < protocolInteractions.length && protocolInteractions[protocolCursor].timeSec <= timeSec) {
-      lockedProtocolUsd += protocolInteractions[protocolCursor].deltaUsd;
-      if (lockedProtocolUsd < 0) lockedProtocolUsd = 0;
-      protocolCursor += 1;
-    }
-  };
-
-  for (const event of events) {
-    if (!initialized) {
-      initialized = true;
-      lastTimeSec = event.timeSec;
-    } else if (event.timeSec > lastTimeSec) {
-      for (const g of ["day", "week", "month", "year"] as const) {
-        addWeighted(series[g], g, lastTimeSec, event.timeSec, portfolioValueUsd);
-      }
-      lastTimeSec = event.timeSec;
-    }
-
-    applyProtocolInteractionsUntil(event.timeSec);
-    for (const delta of event.deltas) {
-      assetsByKey.set(delta.asset.key, delta.asset);
-      const nextBalance = (balances.get(delta.asset.key) ?? 0) + delta.amount;
-      if (nextBalance <= 1e-12) balances.delete(delta.asset.key);
-      else balances.set(delta.asset.key, nextBalance);
-    }
-    portfolioValueUsd = computePortfolioValueUsd(event.timeSec) + lockedProtocolUsd;
-  }
-
-  const endSec = Math.max(lastTimeSec, Math.floor(nowSec));
-  if (endSec > lastTimeSec) {
-    for (const g of ["day", "week", "month", "year"] as const) {
-      addWeighted(series[g], g, lastTimeSec, endSec, portfolioValueUsd);
-    }
-  }
-
-  const toSeries = (map: Map<string, { area: number; duration: number }>) =>
-    [...map.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([period, v]) => ({ period, twab: v.duration > 0 ? v.area / v.duration : 0 }));
-
-  return {
-    day: toSeries(series.day),
-    week: toSeries(series.week),
-    month: toSeries(series.month),
-    year: toSeries(series.year),
-  };
+  return computeTwabSeriesUsdFromValuePoints(points, nowSec);
 };
 
 const buildProtocolInteractions = (
@@ -1353,8 +1238,9 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     dedupedReceivedTokenTxs,
     priceContext
   );
-  const twabResult = computeHevmTwabUsd(balanceEvents, protocolInteractions, priceContext, endTime / 1000);
-  const hevmTwabSeries = computeHevmTwabSeriesUsd(balanceEvents, protocolInteractions, priceContext, endTime / 1000);
+  const twabTrace = buildHevmTwabValuePoints(balanceEvents, protocolInteractions, priceContext, endTime / 1000);
+  const twabValue = computeTwabUsdFromValuePoints(twabTrace.points, endTime / 1000);
+  const hevmTwabSeries = computeHevmTwabSeriesUsd(twabTrace.points, endTime / 1000);
 
   let firstTxTimeSec: number | null = null;
   if (normalTxs.length > 0) {
@@ -1366,7 +1252,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   }
 
   const stats: HevmComputed = {
-    twab: twabResult.twab,
+    twab: twabValue,
     volume: volumeUsd,
     feesPaid: hevmFeesPaidUsd,
     contractsCount,
@@ -1395,14 +1281,14 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   warnings.push(
     "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
   );
-  if (twabResult.inferredAssetCount > 0) {
+  if (twabTrace.inferredAssetCount > 0) {
     warnings.push(
-      `TWAB pricing inferred ${twabResult.inferredAssetCount} unpriced position token(s) from same-transaction value flow (LP/lending share-token fallback).`
+      `TWAB pricing inferred ${twabTrace.inferredAssetCount} unpriced position token(s) from same-transaction value flow (LP/lending share-token fallback).`
     );
   }
-  if (twabResult.unpricedAssetCount > 0) {
+  if (twabTrace.unpricedAssetCount > 0) {
     warnings.push(
-      `TWAB still has ${twabResult.unpricedAssetCount} asset(s) without USD pricing data; those balances were excluded from TWAB valuation.`
+      `TWAB still has ${twabTrace.unpricedAssetCount} asset(s) without USD pricing data; those balances were excluded from TWAB valuation.`
     );
   }
   if (priceContext.nativeSeries.length === 0) {

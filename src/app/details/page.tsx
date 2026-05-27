@@ -73,7 +73,11 @@ export default function DetailsPage() {
         />
         <Metric
           name="Spot TWAB (USD)"
-          explanation="Primary method: Hyperliquid `portfolio` -> `allTime.spotState.accountValueHistory` (official sampled spot account value history), integrated as time-weighted average. Fallback method (if portfolio history is unavailable): fill-based reconstruction."
+          explanation="Computed with the shared TWAB engine: time integral of USD portfolio value from first available spot history point to now. Source is Hyperliquid `portfolio` -> `allTime.spotState.accountValueHistory`; values are integrated as `sum(valueUSD * duration) / totalDuration` with exact timestamps."
+        />
+        <Metric
+          name="HYPE Staking TWAB"
+          explanation="Computed from Hyperliquid staking-native endpoints `delegatorHistory` + `delegatorSummary` (multi-validator aware). Delegation/undelegation deltas are reconstructed over time, then TWAB is computed as a time-weighted average staked balance."
         />
         <Metric
           name="Unit Volume"
@@ -104,7 +108,7 @@ export default function DetailsPage() {
 
         <Metric
           name="TWAB"
-          explanation="Computed as a time-weighted average USD balance reconstructed from HyperEVM flows (normal tx + token tx + internal tx). The value includes wallet balances plus net USD value locked in contract interactions (outgoing tx with calldata), which captures LP/lending deposits across protocols. Valuation is conservative: only stablecoins, HYPE-like assets, and tokens with historical USD series are priced; unpriced assets are excluded."
+          explanation="Computed with the same shared TWAB engine as Spot: exact-time integration `sum(valueUSD * duration) / totalDuration`. USD portfolio value is reconstructed event-by-event from HyperEVM flows (normal tx + token tx + internal tx) plus net USD locked in contract interactions (LP/lending proxy), then valued with historical token prices at each timestamp."
         />
         <Metric
           name="Volume (USD)"
