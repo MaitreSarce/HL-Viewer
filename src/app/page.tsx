@@ -19,6 +19,7 @@ type TradingData = {
     unitFeesPaid: number;
     unitTrades: number;
     unitTokens: string[];
+    unitTwab: number | null;
     totalVolume: number;
   };
   winrates: {
@@ -611,6 +612,10 @@ export default function Home() {
                   rows={[
                     { label: "Volume (Unit assets)", value: formatUsd(trading.totals.unitVolume) },
                     { label: "Fees paid", value: formatUsd(trading.totals.unitFeesPaid) },
+                    {
+                      label: "TWAB (USD)",
+                      value: formatTwabWithAge(trading.totals.unitTwab, walletAgeDays, "usd"),
+                    },
                     { label: "Trades", value: formatNum(trading.totals.unitTrades) },
                     { label: "Tokens", value: trading.totals.unitTokens.join(", ") || "N/A" },
                   ]}

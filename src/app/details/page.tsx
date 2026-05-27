@@ -88,6 +88,10 @@ export default function DetailsPage() {
           explanation="Subset of Spot fills matched to Unit markets via spotMeta pair base token mapping (plus symbol fallback). Volume uses `abs(px * sz)`. Fees follow HyperUnitTracker logic: if `feeToken == USDC`, add `fee`; otherwise convert with `fee * px` (signed, so rebates can reduce net fees). Trades is the number of matched fills."
         />
         <Metric
+          name="Unit TWAB (USD)"
+          explanation="Computed with the same temporal integration method as Spot TWAB, but using Unit-classified spot fills only. Unit balances are reconstructed over time and valued in USD from fill-derived prices, then integrated as `sum(valueUSD * duration) / totalDuration`."
+        />
+        <Metric
           name="Volume total (perps + spot + outcomes)"
           explanation="Computed as `outcomes.volume + spotVolume + perps.volume`."
         />

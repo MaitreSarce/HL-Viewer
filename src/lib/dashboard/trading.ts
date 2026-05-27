@@ -37,6 +37,7 @@ export type TradingSummary = {
     unitFeesPaid: number;
     unitTrades: number;
     unitTokens: string[];
+    unitTwab: number | null;
     totalVolume: number;
   };
   winrates: {
@@ -751,6 +752,114 @@ const computeSpotTwabUsd = (
   return twab > 0 ? twab : null;
 };
 
+const computeUnitTwabUsd = (
+  fills: HyperliquidFill[],
+  resolver: CoinResolver,
+  context: TradingClassificationContext,
+  endTimeMs: number
+): number | null => {
+  type SpotEvent = {
+    timeMs: number;
+    base: string;
+    quote: string;
+    signedBaseSize: number;
+    priceInQuote: number;
+  };
+
+  const events: SpotEvent[] = [];
+  for (const fill of fills) {
+    const rawCoin = getFillCoinRaw(fill);
+    const resolvedCoin = resolver(rawCoin);
+    const coinUpper = resolvedCoin.toUpperCase();
+    const rawCoinUpper = rawCoin.toUpperCase();
+    const dirUpper = readStringKeys(fill, ["dir", "side"]).toUpperCase();
+
+    if (!isSpotTrade(coinUpper, rawCoinUpper, context)) continue;
+    if (isOutcomesCoin(coinUpper, rawCoinUpper, dirUpper, context)) continue;
+
+    const pair = parseSpotPair(coinUpper);
+    if (!pair) continue;
+    const unitTokenFromPair = context.knownUnitSpotIds.has(rawCoinUpper) ? pair.base : null;
+    const unitToken = matchUnitToken(unitTokenFromPair ?? coinUpper);
+    if (!unitToken) continue;
+
+    const timeMs = getFillTime(fill);
+    const priceInQuote = toFiniteNumber(readStringKeys(fill, ["px", "price"]));
+    const signedBaseSize = signedSpotSize(fill, dirUpper);
+    if (timeMs <= 0 || priceInQuote <= 0 || signedBaseSize === 0) continue;
+
+    events.push({
+      timeMs,
+      base: pair.base,
+      quote: pair.quote,
+      signedBaseSize,
+      priceInQuote,
+    });
+  }
+
+  if (events.length === 0) return null;
+
+  events.sort((a, b) => a.timeMs - b.timeMs);
+  const balancesByAsset = new Map<string, number>();
+  const usdPriceByAsset = new Map<string, number>([["USDC", 1], ["USD", 1], ["USDT", 1]]);
+
+  const portfolioUsdValue = () => {
+    let value = 0;
+    for (const [asset, qty] of balancesByAsset.entries()) {
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+      const price = usdPriceByAsset.get(asset) ?? 0;
+      if (price > 0) value += qty * price;
+    }
+    return value;
+  };
+
+  let firstTimeMs = events[0].timeMs;
+  let lastTimeMs = firstTimeMs;
+  let runningValue = 0;
+  let weightedArea = 0;
+  let initialized = false;
+
+  for (const event of events) {
+    if (!initialized) {
+      initialized = true;
+      firstTimeMs = event.timeMs;
+      lastTimeMs = event.timeMs;
+    } else if (event.timeMs > lastTimeMs) {
+      weightedArea += runningValue * (event.timeMs - lastTimeMs);
+      lastTimeMs = event.timeMs;
+    }
+
+    const quotePriceUsd = usdPriceByAsset.get(event.quote) ?? (isStableQuote(event.quote) ? 1 : 0);
+    if (quotePriceUsd > 0) {
+      usdPriceByAsset.set(event.quote, quotePriceUsd);
+      usdPriceByAsset.set(event.base, event.priceInQuote * quotePriceUsd);
+    } else {
+      const basePriceUsd = usdPriceByAsset.get(event.base) ?? 0;
+      if (basePriceUsd > 0) {
+        usdPriceByAsset.set(event.quote, basePriceUsd / event.priceInQuote);
+      }
+    }
+
+    const nextBase = (balancesByAsset.get(event.base) ?? 0) + event.signedBaseSize;
+    balancesByAsset.set(event.base, nextBase);
+
+    if (quotePriceUsd > 0) {
+      const quoteDelta = event.signedBaseSize * event.priceInQuote;
+      const nextQuote = (balancesByAsset.get(event.quote) ?? 0) - quoteDelta;
+      balancesByAsset.set(event.quote, nextQuote);
+    }
+
+    runningValue = portfolioUsdValue();
+  }
+
+  const endMs = Math.max(lastTimeMs, Math.floor(endTimeMs));
+  if (endMs > lastTimeMs) weightedArea += runningValue * (endMs - lastTimeMs);
+  const durationMs = Math.max(0, endMs - firstTimeMs);
+  if (durationMs <= 0) return runningValue > 0 ? runningValue : null;
+  const twab = weightedArea / durationMs;
+  return twab > 0 ? twab : null;
+};
+
 export const summarizeTradingFills = (
   fills: HyperliquidFill[],
   resolver?: CoinResolver,
@@ -850,6 +959,7 @@ export const summarizeTradingFills = (
 
   const totalVolume = outcomes.volume + spotVolume + perps.volume;
   const spotTwab = computeSpotTwabUsd(fills, resolver ?? ((coin) => coin), classificationContext, endTimeMs);
+  const unitTwab = computeUnitTwabUsd(fills, resolver ?? ((coin) => coin), classificationContext, endTimeMs);
 
   return {
     totals: {
@@ -866,6 +976,7 @@ export const summarizeTradingFills = (
       unitFeesPaid,
       unitTrades,
       unitTokens: UNIT_TOKEN_LIST.filter((token) => unitTokensSeen.has(token)),
+      unitTwab,
       totalVolume,
     },
     winrates: {
