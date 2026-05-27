@@ -123,18 +123,18 @@ const ZoneCard = ({
   </article>
 );
 
-const HistogramCard = ({
-  title,
-  rows,
-}: {
-  title: string;
-  rows: Array<{ label: string; value: number }>;
-}) => {
+const chartDisplayConfig = (count: number) => {
+  const labelStep = count > 42 ? 8 : count > 30 ? 6 : count > 20 ? 4 : count > 12 ? 2 : 1;
+  const valueStep = count > 42 ? 6 : count > 30 ? 4 : count > 20 ? 3 : count > 12 ? 2 : 1;
+  return { labelStep, valueStep };
+};
+
+const HistogramCard = ({ title, rows }: { title: string; rows: Array<{ label: string; value: number }> }) => {
   const max = rows.reduce((acc, row) => (Math.abs(row.value) > acc ? Math.abs(row.value) : acc), 0);
-  const maxItems = 36;
+  const maxItems = 48;
   const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
-  const valueStep = displayedRows.length > 24 ? 4 : displayedRows.length > 16 ? 3 : displayedRows.length > 10 ? 2 : 1;
-  const xLabelStep = displayedRows.length > 24 ? 4 : displayedRows.length > 16 ? 3 : displayedRows.length > 10 ? 2 : 1;
+  const { labelStep, valueStep } = chartDisplayConfig(displayedRows.length);
+  const chartHeight = 220;
   return (
     <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
@@ -142,62 +142,61 @@ const HistogramCard = ({
         <p className="text-xs text-slate-500">No data.</p>
       ) : (
         <div className="space-y-2">
-          <div className="h-48 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
-            <div className="flex h-full items-end gap-1 overflow-x-auto">
-              {displayedRows.map((row, idx) => {
-                const heightPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
-                return (
-                  <div key={`${title}-bar-${row.label}`} className="flex h-full min-w-10 flex-1 flex-col items-center justify-end gap-1">
-                    {idx % valueStep === 0 ? (
-                      <span className="mb-1 max-w-full truncate text-[9px] leading-none text-slate-700" title={formatUsd(row.value)}>
-                        {formatUsdCompact(row.value)}
-                      </span>
-                    ) : (
-                      <span className="mb-1 h-[9px]" />
-                    )}
-                    <div className="w-full rounded-t bg-slate-700" style={{ height: `${heightPct}%` }} />
+          <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+            <div className="flex gap-2">
+              <div className="flex w-14 flex-col justify-between text-right text-[10px] text-slate-500">
+                <span>{formatUsdCompact(max)}</span>
+                <span>{formatUsdCompact(max * 0.66)}</span>
+                <span>{formatUsdCompact(max * 0.33)}</span>
+                <span>$0</span>
+              </div>
+              <div className="overflow-x-auto">
+                <div className="relative" style={{ minWidth: `${Math.max(520, displayedRows.length * 28)}px` }}>
+                  <div className="relative flex items-end gap-1 border-b border-l border-slate-300 px-2 pb-1" style={{ height: `${chartHeight}px` }}>
+                    <div className="pointer-events-none absolute inset-0">
+                      <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
+                      <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
+                    </div>
+                    {displayedRows.map((row, idx) => {
+                      const heightPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
+                      const heightPx = (heightPct / 100) * (chartHeight - 20);
+                      return (
+                        <div key={`${title}-bar-${row.label}`} className="relative flex min-w-6 flex-1 items-end justify-center">
+                          {idx % valueStep === 0 ? (
+                            <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${heightPx}px` }} title={formatUsd(row.value)}>
+                              {formatUsdCompact(row.value)}
+                            </span>
+                          ) : null}
+                          <div className="w-full rounded-t bg-slate-700" style={{ height: `${heightPct}%` }} />
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
+                  <div className="mt-1 flex gap-1 px-2">
+                    {displayedRows.map((row, idx) => (
+                      <span key={`${title}-label-${row.label}`} className="min-w-6 flex-1 truncate text-center text-[10px] text-slate-600" title={row.label}>
+                        {idx % labelStep === 0 ? row.label : ""}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-          <div className="grid gap-1 text-[10px] text-slate-600" style={{ gridTemplateColumns: `repeat(${displayedRows.length}, minmax(0, 1fr))` }}>
-            {displayedRows.map((row, idx) => (
-              <span key={`${title}-label-${row.label}`} className="truncate text-center" title={row.label}>
-                {idx % xLabelStep === 0 ? row.label : ""}
-              </span>
-            ))}
-          </div>
-          <div className="grid gap-1 text-[10px] text-slate-700" style={{ gridTemplateColumns: `repeat(${displayedRows.length}, minmax(0, 1fr))` }}>
-            {displayedRows.map((row, idx) => (
-              <span key={`${title}-value-${row.label}`} className="truncate text-center" title={formatUsd(row.value)}>
-                {idx % valueStep === 0 ? formatUsdCompact(row.value) : ""}
-              </span>
-            ))}
-          </div>
-          {rows.length > maxItems ? (
-            <p className="text-[10px] text-slate-500">Showing last {maxItems} periods.</p>
-          ) : null}
+          {rows.length > maxItems ? <p className="text-[10px] text-slate-500">Showing last {maxItems} periods.</p> : null}
         </div>
       )}
     </article>
   );
 };
 
-const DualHistogramCard = ({
-  title,
-  rows,
-}: {
-  title: string;
-  rows: Array<{ label: string; volume: number; pnl: number }>;
-}) => {
-  const maxItems = 36;
+const DualHistogramCard = ({ title, rows }: { title: string; rows: Array<{ label: string; volume: number; pnl: number }> }) => {
+  const maxItems = 48;
   const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
   const maxVolume = displayedRows.reduce((acc, row) => (Math.abs(row.volume) > acc ? Math.abs(row.volume) : acc), 0);
   const maxPnl = displayedRows.reduce((acc, row) => (Math.abs(row.pnl) > acc ? Math.abs(row.pnl) : acc), 0);
-  const valueStep = displayedRows.length > 24 ? 4 : displayedRows.length > 16 ? 3 : displayedRows.length > 10 ? 2 : 1;
-  const xLabelStep = displayedRows.length > 24 ? 4 : displayedRows.length > 16 ? 3 : displayedRows.length > 10 ? 2 : 1;
-
+  const { labelStep, valueStep } = chartDisplayConfig(displayedRows.length);
+  const chartHeight = 220;
   return (
     <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
@@ -205,41 +204,58 @@ const DualHistogramCard = ({
         <p className="text-xs text-slate-500">No data.</p>
       ) : (
         <div className="space-y-2">
-          <div className="mb-1 flex items-center justify-between text-[10px]">
-            <span className="font-medium text-sky-700">Y-left Volume {maxVolume > 0 ? `(max ${formatUsdCompact(maxVolume)})` : ""}</span>
-            <span className="font-medium text-emerald-700">Y-right PNL {maxPnl > 0 ? `(max ${formatUsdCompact(maxPnl)})` : ""}</span>
-          </div>
-          <div className="h-48 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
-            <div className="flex h-full items-end gap-1 overflow-x-auto">
-              {displayedRows.map((row, idx) => {
-                const volumeHeight = maxVolume > 0 ? Math.max(2, (Math.abs(row.volume) / maxVolume) * 100) : 0;
-                const pnlHeight = maxPnl > 0 ? Math.max(2, (Math.abs(row.pnl) / maxPnl) * 100) : 0;
-                return (
-                  <div key={`${title}-pair-${row.label}`} className="flex h-full min-w-10 flex-1 flex-col items-center justify-end gap-1">
-                    {idx % valueStep === 0 ? (
-                      <div className="mb-1 flex w-full items-center justify-center gap-1 text-[9px] leading-none">
-                        <span className="truncate text-sky-700" title={`Volume: ${formatUsd(row.volume)}`}>{formatUsdCompact(row.volume)}</span>
-                        <span className="text-slate-300">/</span>
-                        <span className="truncate text-emerald-700" title={`PNL: ${formatUsd(row.pnl)}`}>{formatUsdCompact(row.pnl)}</span>
-                      </div>
-                    ) : (
-                      <span className="mb-1 h-[9px]" />
-                    )}
-                    <div className="flex w-full items-end justify-center gap-0.5">
-                      <div className="w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeight}%` }} title={`Volume: ${formatUsd(row.volume)}`} />
-                      <div className="w-1/2 rounded-t bg-emerald-600" style={{ height: `${pnlHeight}%` }} title={`PNL: ${formatUsd(row.pnl)}`} />
-                    </div>
-                  </div>
-                );
-              })}
+          <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+            <div className="mb-1 flex items-center justify-between text-[10px]">
+              <span className="font-medium text-sky-700">Y-left Volume</span>
+              <span className="font-medium text-emerald-700">Y-right PNL</span>
             </div>
-          </div>
-          <div className="grid gap-1 text-[10px] text-slate-600" style={{ gridTemplateColumns: `repeat(${displayedRows.length}, minmax(0, 1fr))` }}>
-            {displayedRows.map((row, idx) => (
-              <span key={`${title}-label-${row.label}`} className="truncate text-center" title={row.label}>
-                {idx % xLabelStep === 0 ? row.label : ""}
-              </span>
-            ))}
+            <div className="flex gap-2">
+              <div className="flex w-14 flex-col justify-between text-right text-[10px] text-sky-700">
+                <span>{formatUsdCompact(maxVolume)}</span>
+                <span>{formatUsdCompact(maxVolume * 0.66)}</span>
+                <span>{formatUsdCompact(maxVolume * 0.33)}</span>
+                <span>$0</span>
+              </div>
+              <div className="overflow-x-auto">
+                <div className="relative" style={{ minWidth: `${Math.max(560, displayedRows.length * 32)}px` }}>
+                  <div className="relative flex items-end gap-1 border-b border-l border-r border-slate-300 px-2 pb-1" style={{ height: `${chartHeight}px` }}>
+                    <div className="pointer-events-none absolute inset-0">
+                      <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
+                      <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
+                    </div>
+                    {displayedRows.map((row, idx) => {
+                      const volumeHeightPct = maxVolume > 0 ? Math.max(2, (Math.abs(row.volume) / maxVolume) * 100) : 0;
+                      const pnlHeightPct = maxPnl > 0 ? Math.max(2, (Math.abs(row.pnl) / maxPnl) * 100) : 0;
+                      const topPx = Math.max((volumeHeightPct / 100) * (chartHeight - 20), (pnlHeightPct / 100) * (chartHeight - 20));
+                      return (
+                        <div key={`${title}-pair-${row.label}`} className="relative flex min-w-7 flex-1 items-end justify-center gap-0.5">
+                          {idx % valueStep === 0 ? (
+                            <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${topPx}px` }}>
+                              {formatUsdCompact(row.volume)}/{formatUsdCompact(row.pnl)}
+                            </span>
+                          ) : null}
+                          <div className="w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeightPct}%` }} title={`Volume: ${formatUsd(row.volume)}`} />
+                          <div className="w-1/2 rounded-t bg-emerald-600" style={{ height: `${pnlHeightPct}%` }} title={`PNL: ${formatUsd(row.pnl)}`} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-1 flex gap-1 px-2">
+                    {displayedRows.map((row, idx) => (
+                      <span key={`${title}-label-${row.label}`} className="min-w-7 flex-1 truncate text-center text-[10px] text-slate-600" title={row.label}>
+                        {idx % labelStep === 0 ? row.label : ""}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="flex w-14 flex-col justify-between text-[10px] text-emerald-700">
+                <span>{formatUsdCompact(maxPnl)}</span>
+                <span>{formatUsdCompact(maxPnl * 0.66)}</span>
+                <span>{formatUsdCompact(maxPnl * 0.33)}</span>
+                <span>$0</span>
+              </div>
+            </div>
           </div>
           <div className="flex items-center gap-4 text-[10px]">
             <span className="inline-flex items-center gap-1 text-sky-700"><span className="h-2 w-2 rounded bg-sky-600" />Volume</span>
