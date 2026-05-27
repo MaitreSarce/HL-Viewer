@@ -45,6 +45,45 @@ export type SpotMetaResponse = {
   tokens?: SpotMetaToken[];
 };
 
+export type PerpMetaAsset = {
+  name?: string;
+  [key: string]: unknown;
+};
+
+export type PerpMetaResponse = {
+  universe?: PerpMetaAsset[];
+  [key: string]: unknown;
+};
+
+export type OutcomeMetaSide = {
+  name?: string;
+  [key: string]: unknown;
+};
+
+export type OutcomeMetaOutcome = {
+  outcome?: number;
+  name?: string;
+  description?: string;
+  sideSpecs?: OutcomeMetaSide[];
+  [key: string]: unknown;
+};
+
+export type OutcomeMetaQuestion = {
+  question?: number;
+  name?: string;
+  description?: string;
+  fallbackOutcome?: number;
+  namedOutcomes?: number[];
+  settledNamedOutcomes?: number[];
+  [key: string]: unknown;
+};
+
+export type OutcomeMetaResponse = {
+  outcomes?: OutcomeMetaOutcome[];
+  questions?: OutcomeMetaQuestion[];
+  [key: string]: unknown;
+};
+
 const extractRemoteError = (payload: unknown): string => {
   if (typeof payload === "string" && payload.trim()) return payload;
   if (!payload || typeof payload !== "object") return "Remote API error";

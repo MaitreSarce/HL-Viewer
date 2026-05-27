@@ -46,8 +46,9 @@ export default function DetailsPage() {
 
       <Block title="Trading (Hyperliquid API)">
         <p>
-          Source: `userFillsByTime` from timestamp 0 to now, with window splitting and de-duplication. If empty, fallback to `userFills`.
-          Hyperliquid fill endpoints expose at most the latest 10,000 fills per wallet.
+          Source: `userFillsByTime` from timestamp 0 to now, with window splitting and de-duplication, plus `spotMeta`, `meta`, and
+          `outcomeMeta` for market-type classification. If empty, fallback to `userFills`. Hyperliquid fill endpoints expose at most
+          the latest 10,000 fills per wallet.
         </p>
         <p>Base formulas per fill:</p>
         <p>- Volume = `abs(px * sz)`</p>
@@ -56,7 +57,7 @@ export default function DetailsPage() {
 
         <Metric
           name="Outcomes Volume / PVL / Winrate"
-          explanation="A fill is classified as Outcomes when coin suggests prediction markets (`?`, `#`, `+`, `-YES`, `-NO`) or when `dir` contains `SETTLEMENT` / `DELIST`."
+          explanation="A fill is classified as Outcomes when it matches `outcomeMeta` market names or encoded outcome ids (`#N` / `+N`), or when coin includes explicit outcome markers (`?`, `-YES`, `-NO`), or when `dir` contains `SETTLEMENT` / `DELIST`. As fallback, `BUY/SELL` fills that are neither known spot (`spotMeta`) nor known perp (`meta`) are treated as Outcomes."
         />
         <Metric
           name="XYZ Volume / PVL / Winrate"
@@ -68,7 +69,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Spot Volume"
-          explanation="A fill is counted as Spot when `dir` contains `BUY` or `SELL`, or when coin looks like a spot pair (`/`) or raw spot id (`@...`)."
+          explanation="A fill is counted as Spot only when coin matches known spot assets from `spotMeta` (for example `@index` or known spot pair name). Outcomes are excluded from spot even if `dir` is `BUY` or `SELL`."
         />
         <Metric
           name="Unit Volume"

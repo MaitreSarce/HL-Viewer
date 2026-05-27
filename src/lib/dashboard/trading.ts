@@ -1,5 +1,7 @@
 import {
   buildSpotCoinResolver,
+  OutcomeMetaResponse,
+  PerpMetaResponse,
   fetchHyperliquidInfo,
   fetchTimeRangeWithSplit,
   getFillCoinRaw,
@@ -47,6 +49,12 @@ export type TradingApiResult = TradingSummary & {
 
 type CoinResolver = (rawCoin: string) => string;
 
+type TradingClassificationContext = {
+  knownSpotCoins: Set<string>;
+  knownPerpCoins: Set<string>;
+  knownOutcomeCoins: Set<string>;
+};
+
 const EMPTY_BUCKET = (): TradingBucket => ({
   volume: 0,
   pnl: 0,
@@ -81,17 +89,105 @@ const winrate = (bucket: TradingBucket) => {
   return (bucket.wins / closedTrades) * 100;
 };
 
-const isOutcomesCoin = (coinUpper: string, rawCoinUpper: string, dirUpper: string) => {
+const normalizeCoin = (value: string) => value.trim().toUpperCase();
+
+const buildSpotCoinSet = (spotMeta: SpotMetaResponse, resolver: CoinResolver) => {
+  const known = new Set<string>();
+  for (const pair of spotMeta.universe ?? []) {
+    if (typeof pair.index === "number") {
+      const rawId = `@${pair.index}`;
+      known.add(rawId);
+      const resolved = normalizeCoin(resolver(rawId));
+      if (resolved) known.add(resolved);
+    }
+    if (typeof pair.name === "string") {
+      const pairName = normalizeCoin(pair.name);
+      if (pairName) known.add(pairName);
+    }
+  }
+  return known;
+};
+
+const buildPerpCoinSet = (perpMeta: PerpMetaResponse) => {
+  const known = new Set<string>();
+  for (const asset of perpMeta.universe ?? []) {
+    if (typeof asset.name === "string") {
+      const name = normalizeCoin(asset.name);
+      if (name) known.add(name);
+    }
+  }
+  return known;
+};
+
+const buildOutcomeCoinSet = (outcomeMeta: OutcomeMetaResponse) => {
+  const known = new Set<string>();
+  const outcomeNameById = new Map<number, string>();
+
+  for (const outcome of outcomeMeta.outcomes ?? []) {
+    const outcomeName = normalizeCoin(typeof outcome.name === "string" ? outcome.name : "");
+    if (outcomeName) known.add(outcomeName);
+
+    if (typeof outcome.outcome === "number" && Number.isFinite(outcome.outcome)) {
+      const outcomeId = Math.floor(outcome.outcome);
+      if (outcomeName) outcomeNameById.set(outcomeId, outcomeName);
+      for (let side = 0; side <= 1; side += 1) {
+        const encoding = String(outcomeId * 10 + side);
+        known.add(`#${encoding}`);
+        known.add(`+${encoding}`);
+      }
+    }
+  }
+
+  for (const question of outcomeMeta.questions ?? []) {
+    const questionName = normalizeCoin(typeof question.name === "string" ? question.name : "");
+    if (questionName) known.add(questionName);
+
+    if (!questionName || !Array.isArray(question.namedOutcomes)) continue;
+    for (const id of question.namedOutcomes) {
+      if (typeof id !== "number" || !Number.isFinite(id)) continue;
+      const namedOutcome = outcomeNameById.get(Math.floor(id));
+      if (!namedOutcome) continue;
+      known.add(`${questionName}: ${namedOutcome}`);
+      known.add(`${questionName} - ${namedOutcome}`);
+    }
+  }
+
+  return known;
+};
+
+const isBuySellDir = (dirUpper: string) => dirUpper.includes("BUY") || dirUpper.includes("SELL");
+
+const isKnownSpotCoin = (coinUpper: string, rawCoinUpper: string, context: TradingClassificationContext) => {
+  return (
+    rawCoinUpper.startsWith("@") ||
+    context.knownSpotCoins.has(rawCoinUpper) ||
+    context.knownSpotCoins.has(coinUpper)
+  );
+};
+
+const isKnownPerpCoin = (coinUpper: string, rawCoinUpper: string, context: TradingClassificationContext) => {
+  return context.knownPerpCoins.has(rawCoinUpper) || context.knownPerpCoins.has(coinUpper);
+};
+
+const isOutcomesCoin = (
+  coinUpper: string,
+  rawCoinUpper: string,
+  dirUpper: string,
+  context: TradingClassificationContext
+) => {
   return (
     coinUpper.includes("?") ||
     rawCoinUpper.startsWith("#") ||
     rawCoinUpper.startsWith("+") ||
     coinUpper.startsWith("#") ||
     coinUpper.startsWith("+") ||
+    context.knownOutcomeCoins.has(rawCoinUpper) ||
+    context.knownOutcomeCoins.has(coinUpper) ||
     coinUpper.endsWith("-YES") ||
     coinUpper.endsWith("-NO") ||
     dirUpper.includes("SETTLEMENT") ||
-    dirUpper.includes("DELIST")
+    dirUpper.includes("DELIST") ||
+    (isBuySellDir(dirUpper) && !isKnownSpotCoin(coinUpper, rawCoinUpper, context) && !isKnownPerpCoin(coinUpper, rawCoinUpper, context))
   );
 };
 
@@ -106,22 +202,23 @@ const isXyzCoin = (coinUpper: string) => {
   );
 };
 
-const isSpotTrade = (dirUpper: string, coinUpper: string, rawCoinUpper: string) => {
-  return (
-    dirUpper.includes("BUY") ||
-    dirUpper.includes("SELL") ||
-    coinUpper.includes("/") ||
-    rawCoinUpper.startsWith("@")
-  );
+const isSpotTrade = (coinUpper: string, rawCoinUpper: string, context: TradingClassificationContext) => {
+  return isKnownSpotCoin(coinUpper, rawCoinUpper, context);
 };
 
-const isPerpTrade = (dirUpper: string) => {
+const isPerpTrade = (
+  dirUpper: string,
+  coinUpper: string,
+  rawCoinUpper: string,
+  context: TradingClassificationContext
+) => {
   return (
     dirUpper.includes("LONG") ||
     dirUpper.includes("SHORT") ||
     dirUpper.includes("OPEN ") ||
     dirUpper.includes("CLOSE ") ||
-    dirUpper.includes("ADD ")
+    dirUpper.includes("ADD ") ||
+    isKnownPerpCoin(coinUpper, rawCoinUpper, context)
   );
 };
 
@@ -134,12 +231,21 @@ const isUnitCoin = (coinUpper: string) => {
   );
 };
 
-export const summarizeTradingFills = (fills: HyperliquidFill[], resolver?: CoinResolver): TradingSummary => {
+export const summarizeTradingFills = (
+  fills: HyperliquidFill[],
+  resolver?: CoinResolver,
+  context?: TradingClassificationContext
+): TradingSummary => {
   const outcomes = EMPTY_BUCKET();
   const xyz = EMPTY_BUCKET();
   const perps = EMPTY_BUCKET();
   let spotVolume = 0;
   let unitVolume = 0;
+  const classificationContext: TradingClassificationContext = context ?? {
+    knownSpotCoins: new Set<string>(),
+    knownPerpCoins: new Set<string>(),
+    knownOutcomeCoins: new Set<string>(),
+  };
 
   for (const fill of fills) {
     const rawCoin = getFillCoinRaw(fill);
@@ -148,8 +254,9 @@ export const summarizeTradingFills = (fills: HyperliquidFill[], resolver?: CoinR
     const rawCoinUpper = rawCoin.toUpperCase();
     const dirUpper = readStringKeys(fill, ["dir", "side"]).toUpperCase();
     const volume = fillVolume(fill);
+    const outcomeFill = isOutcomesCoin(coinUpper, rawCoinUpper, dirUpper, classificationContext);
 
-    if (isOutcomesCoin(coinUpper, rawCoinUpper, dirUpper)) {
+    if (outcomeFill) {
       update(outcomes, fill);
     }
 
@@ -157,14 +264,14 @@ export const summarizeTradingFills = (fills: HyperliquidFill[], resolver?: CoinR
       update(xyz, fill);
     }
 
-    if (isSpotTrade(dirUpper, coinUpper, rawCoinUpper)) {
+    if (isSpotTrade(coinUpper, rawCoinUpper, classificationContext) && !outcomeFill) {
       spotVolume += volume;
       if (isUnitCoin(coinUpper)) {
         unitVolume += volume;
       }
     }
 
-    if (isPerpTrade(dirUpper)) {
+    if (isPerpTrade(dirUpper, coinUpper, rawCoinUpper, classificationContext)) {
       update(perps, fill);
     }
   }
@@ -193,8 +300,9 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
   const endTime = Date.now();
   const startTime = 0;
 
-  const [spotMeta, rangeResult] = await Promise.all([
+  const [spotMeta, perpMeta, rangeResult] = await Promise.all([
     fetchHyperliquidInfo<SpotMetaResponse>({ type: "spotMeta" }),
+    fetchHyperliquidInfo<PerpMetaResponse>({ type: "meta" }),
     fetchTimeRangeWithSplit<HyperliquidFill>({
       type: "userFillsByTime",
       user: address,
@@ -209,6 +317,17 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
   let fills = rangeResult.rows;
   let usedFallback = false;
   const warnings: string[] = [];
+  let outcomeMeta: OutcomeMetaResponse | null = null;
+  let outcomeMetaRequestUsed = 0;
+
+  try {
+    outcomeMeta = await fetchHyperliquidInfo<OutcomeMetaResponse>({ type: "outcomeMeta" });
+    outcomeMetaRequestUsed = 1;
+  } catch {
+    warnings.push(
+      "Could not load outcomeMeta. Outcome detection falls back to encoded prefixes (#/+), settlement flags, and non-spot/non-perp buy/sell inference."
+    );
+  }
 
   if (fills.length === 0) {
     const latest = await fetchHyperliquidInfo<unknown>({
@@ -228,14 +347,18 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
   warnings.push("Hyperliquid only exposes up to the 10000 most recent fills per wallet on fill endpoints.");
 
   const resolver = buildSpotCoinResolver(spotMeta);
-  const summary = summarizeTradingFills(fills, resolver);
+  const summary = summarizeTradingFills(fills, resolver, {
+    knownSpotCoins: buildSpotCoinSet(spotMeta, resolver),
+    knownPerpCoins: buildPerpCoinSet(perpMeta),
+    knownOutcomeCoins: outcomeMeta ? buildOutcomeCoinSet(outcomeMeta) : new Set<string>(),
+  });
 
   return {
     source: "api",
     address,
     period: { startTime, endTime },
     meta: {
-      requestsUsed: rangeResult.requestsUsed + (usedFallback ? 1 : 0),
+      requestsUsed: rangeResult.requestsUsed + (usedFallback ? 1 : 0) + 2 + outcomeMetaRequestUsed,
       usedFallback,
       truncated: rangeResult.truncated,
       warnings,
