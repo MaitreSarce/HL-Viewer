@@ -84,6 +84,14 @@ const formatUsd = (value: number) =>
     maximumFractionDigits: 2,
   }).format(value);
 
+const formatUsdCompact = (value: number) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+
 const formatNum = (value: number) =>
   new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 2,
@@ -123,8 +131,10 @@ const HistogramCard = ({
   rows: Array<{ label: string; value: number }>;
 }) => {
   const max = rows.reduce((acc, row) => (Math.abs(row.value) > acc ? Math.abs(row.value) : acc), 0);
-  const maxItems = 24;
+  const maxItems = 36;
   const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
+  const valueStep = displayedRows.length > 24 ? 4 : displayedRows.length > 16 ? 3 : displayedRows.length > 10 ? 2 : 1;
+  const xLabelStep = displayedRows.length > 24 ? 4 : displayedRows.length > 16 ? 3 : displayedRows.length > 10 ? 2 : 1;
   return (
     <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
@@ -132,33 +142,36 @@ const HistogramCard = ({
         <p className="text-xs text-slate-500">No data.</p>
       ) : (
         <div className="space-y-2">
-          <div className="h-40 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+          <div className="h-48 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
             <div className="flex h-full items-end gap-1 overflow-x-auto">
-              {displayedRows.map((row) => {
+              {displayedRows.map((row, idx) => {
                 const heightPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
                 return (
-                  <div key={`${title}-bar-${row.label}`} className="flex h-full min-w-8 flex-1 flex-col items-center justify-end gap-1">
-                    <div className="flex w-full flex-col items-center justify-end rounded-t bg-slate-700 px-0.5" style={{ height: `${heightPct}%` }}>
-                      <span className="pb-0.5 text-[9px] leading-none text-white" title={formatUsd(row.value)}>
-                        {formatUsd(row.value)}
+                  <div key={`${title}-bar-${row.label}`} className="flex h-full min-w-10 flex-1 flex-col items-center justify-end gap-1">
+                    {idx % valueStep === 0 ? (
+                      <span className="mb-1 max-w-full truncate text-[9px] leading-none text-slate-700" title={formatUsd(row.value)}>
+                        {formatUsdCompact(row.value)}
                       </span>
-                    </div>
+                    ) : (
+                      <span className="mb-1 h-[9px]" />
+                    )}
+                    <div className="w-full rounded-t bg-slate-700" style={{ height: `${heightPct}%` }} />
                   </div>
                 );
               })}
             </div>
           </div>
           <div className="grid gap-1 text-[10px] text-slate-600" style={{ gridTemplateColumns: `repeat(${displayedRows.length}, minmax(0, 1fr))` }}>
-            {displayedRows.map((row) => (
+            {displayedRows.map((row, idx) => (
               <span key={`${title}-label-${row.label}`} className="truncate text-center" title={row.label}>
-                {row.label}
+                {idx % xLabelStep === 0 ? row.label : ""}
               </span>
             ))}
           </div>
           <div className="grid gap-1 text-[10px] text-slate-700" style={{ gridTemplateColumns: `repeat(${displayedRows.length}, minmax(0, 1fr))` }}>
-            {displayedRows.map((row) => (
+            {displayedRows.map((row, idx) => (
               <span key={`${title}-value-${row.label}`} className="truncate text-center" title={formatUsd(row.value)}>
-                {formatUsd(row.value)}
+                {idx % valueStep === 0 ? formatUsdCompact(row.value) : ""}
               </span>
             ))}
           </div>
@@ -178,10 +191,12 @@ const DualHistogramCard = ({
   title: string;
   rows: Array<{ label: string; volume: number; pnl: number }>;
 }) => {
-  const maxItems = 24;
+  const maxItems = 36;
   const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
   const maxVolume = displayedRows.reduce((acc, row) => (Math.abs(row.volume) > acc ? Math.abs(row.volume) : acc), 0);
   const maxPnl = displayedRows.reduce((acc, row) => (Math.abs(row.pnl) > acc ? Math.abs(row.pnl) : acc), 0);
+  const valueStep = displayedRows.length > 24 ? 4 : displayedRows.length > 16 ? 3 : displayedRows.length > 10 ? 2 : 1;
+  const xLabelStep = displayedRows.length > 24 ? 4 : displayedRows.length > 16 ? 3 : displayedRows.length > 10 ? 2 : 1;
 
   return (
     <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
@@ -191,21 +206,28 @@ const DualHistogramCard = ({
       ) : (
         <div className="space-y-2">
           <div className="mb-1 flex items-center justify-between text-[10px]">
-            <span className="font-medium text-sky-700">Y-left Volume {maxVolume > 0 ? `(max ${formatUsd(maxVolume)})` : ""}</span>
-            <span className="font-medium text-emerald-700">Y-right PNL {maxPnl > 0 ? `(max ${formatUsd(maxPnl)})` : ""}</span>
+            <span className="font-medium text-sky-700">Y-left Volume {maxVolume > 0 ? `(max ${formatUsdCompact(maxVolume)})` : ""}</span>
+            <span className="font-medium text-emerald-700">Y-right PNL {maxPnl > 0 ? `(max ${formatUsdCompact(maxPnl)})` : ""}</span>
           </div>
-          <div className="h-40 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+          <div className="h-48 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
             <div className="flex h-full items-end gap-1 overflow-x-auto">
-              {displayedRows.map((row) => {
+              {displayedRows.map((row, idx) => {
                 const volumeHeight = maxVolume > 0 ? Math.max(2, (Math.abs(row.volume) / maxVolume) * 100) : 0;
                 const pnlHeight = maxPnl > 0 ? Math.max(2, (Math.abs(row.pnl) / maxPnl) * 100) : 0;
                 return (
-                  <div key={`${title}-pair-${row.label}`} className="flex h-full min-w-8 flex-1 items-end justify-center gap-0.5">
-                    <div className="flex w-1/2 flex-col items-center justify-end rounded-t bg-sky-600 px-0.5" style={{ height: `${volumeHeight}%` }} title={`Volume: ${formatUsd(row.volume)}`}>
-                      <span className="pb-0.5 text-[9px] leading-none text-white">{formatUsd(row.volume)}</span>
-                    </div>
-                    <div className="flex w-1/2 flex-col items-center justify-end rounded-t bg-emerald-600 px-0.5" style={{ height: `${pnlHeight}%` }} title={`PNL: ${formatUsd(row.pnl)}`}>
-                      <span className="pb-0.5 text-[9px] leading-none text-white">{formatUsd(row.pnl)}</span>
+                  <div key={`${title}-pair-${row.label}`} className="flex h-full min-w-10 flex-1 flex-col items-center justify-end gap-1">
+                    {idx % valueStep === 0 ? (
+                      <div className="mb-1 flex w-full items-center justify-center gap-1 text-[9px] leading-none">
+                        <span className="truncate text-sky-700" title={`Volume: ${formatUsd(row.volume)}`}>{formatUsdCompact(row.volume)}</span>
+                        <span className="text-slate-300">/</span>
+                        <span className="truncate text-emerald-700" title={`PNL: ${formatUsd(row.pnl)}`}>{formatUsdCompact(row.pnl)}</span>
+                      </div>
+                    ) : (
+                      <span className="mb-1 h-[9px]" />
+                    )}
+                    <div className="flex w-full items-end justify-center gap-0.5">
+                      <div className="w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeight}%` }} title={`Volume: ${formatUsd(row.volume)}`} />
+                      <div className="w-1/2 rounded-t bg-emerald-600" style={{ height: `${pnlHeight}%` }} title={`PNL: ${formatUsd(row.pnl)}`} />
                     </div>
                   </div>
                 );
@@ -213,9 +235,9 @@ const DualHistogramCard = ({
             </div>
           </div>
           <div className="grid gap-1 text-[10px] text-slate-600" style={{ gridTemplateColumns: `repeat(${displayedRows.length}, minmax(0, 1fr))` }}>
-            {displayedRows.map((row) => (
+            {displayedRows.map((row, idx) => (
               <span key={`${title}-label-${row.label}`} className="truncate text-center" title={row.label}>
-                {row.label}
+                {idx % xLabelStep === 0 ? row.label : ""}
               </span>
             ))}
           </div>
