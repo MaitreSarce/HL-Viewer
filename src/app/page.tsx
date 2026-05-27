@@ -123,7 +123,15 @@ const ZoneCard = ({
   </article>
 );
 
-const HistogramCard = ({ title, rows }: { title: string; rows: Array<{ label: string; value: number }> }) => {
+const HistogramCard = ({
+  title,
+  rows,
+  allowNegative = false,
+}: {
+  title: string;
+  rows: Array<{ label: string; value: number }>;
+  allowNegative?: boolean;
+}) => {
   const [zoom, setZoom] = useState(1);
   const [expanded, setExpanded] = useState(false);
   const max = rows.reduce((acc, row) => (Math.abs(row.value) > acc ? Math.abs(row.value) : acc), 0);
@@ -133,6 +141,15 @@ const HistogramCard = ({ title, rows }: { title: string; rows: Array<{ label: st
   const chartHeight = Math.round(220 * zoom);
   const plotHeight = chartHeight - 26;
   const minWidth = Math.max(520, Math.round(displayedRows.length * columnWidthPx * zoom));
+  const maxPositive = displayedRows.reduce((acc, row) => (row.value > acc ? row.value : acc), 0);
+  const minNegative = displayedRows.reduce((acc, row) => (row.value < acc ? row.value : acc), 0);
+  const negativeAbs = Math.abs(minNegative);
+  const zeroFromBottom =
+    allowNegative && maxPositive > 0 && negativeAbs > 0
+      ? (negativeAbs / (maxPositive + negativeAbs)) * plotHeight
+      : 0;
+  const topSpan = allowNegative ? plotHeight - zeroFromBottom : plotHeight;
+  const bottomSpan = allowNegative ? zeroFromBottom : 0;
   const chartBody = (
     <div className="space-y-2">
       <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
@@ -149,16 +166,37 @@ const HistogramCard = ({ title, rows }: { title: string; rows: Array<{ label: st
                 <div className="pointer-events-none absolute inset-0">
                   <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
                   <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
+                  {allowNegative ? <div className="absolute left-0 right-0 border-t-2 border-slate-300" style={{ bottom: `${zeroFromBottom}px` }} /> : null}
                 </div>
                 {displayedRows.map((row) => {
-                  const heightPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
-                  const heightPx = (heightPct / 100) * plotHeight;
+                  const upPx = allowNegative
+                    ? row.value >= 0 && maxPositive > 0
+                      ? (row.value / maxPositive) * Math.max(0, topSpan)
+                      : 0
+                    : max > 0
+                      ? (Math.abs(row.value) / max) * plotHeight
+                      : 0;
+                  const downPx = allowNegative && row.value < 0 && negativeAbs > 0
+                    ? (Math.abs(row.value) / negativeAbs) * Math.max(0, bottomSpan)
+                    : 0;
+                  const barHeightPx = allowNegative ? (row.value >= 0 ? upPx : downPx) : upPx;
+                  const labelBottom = allowNegative
+                    ? row.value >= 0
+                      ? zeroFromBottom + upPx + 4
+                      : zeroFromBottom + 4
+                    : barHeightPx + 4;
                   return (
                     <div key={`${title}-bar-${row.label}`} className="relative flex h-full w-11 flex-none items-end justify-center">
-                      <span className="absolute text-[9px] leading-none text-slate-700" style={{ bottom: `${heightPx + 4}px` }} title={formatUsd(row.value)}>
+                      <span className="absolute text-[9px] leading-none text-slate-700" style={{ bottom: `${labelBottom}px` }} title={formatUsd(row.value)}>
                         {formatUsdCompact(row.value)}
                       </span>
-                      <div className="w-full rounded-t bg-slate-700" style={{ height: `${heightPx}px` }} />
+                      <div
+                        className={`absolute w-full rounded-t ${allowNegative && row.value < 0 ? "bg-rose-600" : "bg-slate-700"}`}
+                        style={{
+                          height: `${barHeightPx}px`,
+                          bottom: `${allowNegative ? (row.value >= 0 ? zeroFromBottom : zeroFromBottom - downPx) : 0}px`,
+                        }}
+                      />
                     </div>
                   );
                 })}
@@ -563,6 +601,7 @@ export default function Home() {
                 />
                 <HistogramCard
                   title={`Outcomes PNL (${histGranularity})`}
+                  allowNegative
                   rows={trading.charts.outcomes[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
                 />
                 <HistogramCard
@@ -571,6 +610,7 @@ export default function Home() {
                 />
                 <HistogramCard
                   title={`XYZ PNL (${histGranularity})`}
+                  allowNegative
                   rows={trading.charts.xyz[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
                 />
                 <HistogramCard
@@ -579,6 +619,7 @@ export default function Home() {
                 />
                 <HistogramCard
                   title={`Perps PNL (${histGranularity})`}
+                  allowNegative
                   rows={trading.charts.perps[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
                 />
                 <HistogramCard
