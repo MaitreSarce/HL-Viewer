@@ -89,7 +89,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Unit TWAB (USD)"
-          explanation="Computed with the same temporal integration method as Spot TWAB, but using Unit-classified spot fills only. Unit balances are reconstructed over time and valued in USD from fill-derived prices, then integrated as `sum(valueUSD * duration) / totalDuration`."
+          explanation="Computed with the exposure-share fallback method: `Unit TWAB = Spot TWAB × (Unit Volume / Spot Volume)`, with the ratio clamped to `[0, 1]`."
         />
         <Metric
           name="Volume total (perps + spot + outcomes)"
