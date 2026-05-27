@@ -81,7 +81,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Unit Volume / Fees / Trades"
-          explanation="Subset of Spot fills where coin matches Unit token aliases (BTC/UBTC, ETH/UETH, SOL/USOL, PUMP/UPUMP, FARTCOIN/UFART, SPXS/UUUSPX, BONK/UBONK, XPL, ZEC/UZEC). Volume and fees are aggregated on those fills; fees count only positive fee values; trades is the number of matched fills."
+          explanation="Subset of Spot fills matched to Unit markets via spotMeta pair base token mapping (plus symbol fallback). Volume uses `abs(px * sz)`. Fees follow HyperUnitTracker logic: if `feeToken == USDC`, add `fee`; otherwise convert with `fee * px` (signed, so rebates can reduce net fees). Trades is the number of matched fills."
         />
         <Metric
           name="Volume total (perps + spot + outcomes)"

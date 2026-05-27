@@ -96,6 +96,7 @@ type TradingClassificationContext = {
   knownSpotCoins: Set<string>;
   knownPerpCoins: Set<string>;
   knownOutcomeCoins: Set<string>;
+  knownUnitSpotIds: Set<string>;
 };
 
 const EMPTY_BUCKET = (): TradingBucket => ({
@@ -284,6 +285,12 @@ const UNIT_TOKEN_ALIASES: Record<string, string[]> = {
   ZEC: ["ZEC", "UZEC"],
 };
 
+const UNIT_BASE_TOKEN_NAMES = new Set<string>(
+  Object.values(UNIT_TOKEN_ALIASES)
+    .flat()
+    .map((v) => v.toUpperCase())
+);
+
 const UNIT_TOKEN_LIST = Object.keys(UNIT_TOKEN_ALIASES);
 
 const matchUnitToken = (coinUpper: string): string | null => {
@@ -299,6 +306,35 @@ const matchUnitToken = (coinUpper: string): string | null => {
     }
   }
   return null;
+};
+
+const buildUnitSpotIdSet = (spotMeta: SpotMetaResponse) => {
+  const known = new Set<string>();
+  const tokenNameByIndex = new Map<number, string>();
+  for (const token of spotMeta.tokens ?? []) {
+    if (typeof token.index === "number" && typeof token.name === "string") {
+      tokenNameByIndex.set(token.index, token.name.trim().toUpperCase());
+    }
+  }
+  for (const pair of spotMeta.universe ?? []) {
+    if (typeof pair.index !== "number") continue;
+    const baseTokenIndex = Array.isArray(pair.tokens) ? pair.tokens[0] : undefined;
+    const baseTokenName = typeof baseTokenIndex === "number" ? tokenNameByIndex.get(baseTokenIndex) ?? "" : "";
+    if (UNIT_BASE_TOKEN_NAMES.has(baseTokenName)) {
+      known.add(`@${pair.index}`.toUpperCase());
+    }
+  }
+  return known;
+};
+
+const unitFeeUsdFromFill = (fill: HyperliquidFill) => {
+  const fee = toFiniteNumber(readStringKeys(fill, ["fee", "fees"]));
+  const px = toFiniteNumber(readStringKeys(fill, ["px", "price"]));
+  const feeToken = readStringKeys(fill, ["feeToken"]).trim().toUpperCase();
+  if (!Number.isFinite(fee) || fee === 0) return 0;
+  if (feeToken === "USDC") return fee;
+  if (Number.isFinite(px) && px > 0) return fee * px;
+  return 0;
 };
 
 const STABLE_QUOTES = new Set([
@@ -593,6 +629,7 @@ export const summarizeTradingFills = (
     knownSpotCoins: new Set<string>(),
     knownPerpCoins: new Set<string>(),
     knownOutcomeCoins: new Set<string>(),
+    knownUnitSpotIds: new Set<string>(),
   };
 
   for (const fill of fills) {
@@ -646,10 +683,13 @@ export const summarizeTradingFills = (
       spotVolume += volume;
       spotFeesPaid += feePaid;
       addVolumePoint(spotSeries, volume);
-      const unitToken = matchUnitToken(coinUpper);
+      const unitTokenFromPair = classificationContext.knownUnitSpotIds.has(rawCoinUpper)
+        ? parseSpotPair(coinUpper)?.base ?? null
+        : null;
+      const unitToken = matchUnitToken(unitTokenFromPair ?? coinUpper);
       if (unitToken) {
         unitVolume += volume;
-        unitFeesPaid += feePaid;
+        unitFeesPaid += unitFeeUsdFromFill(fill);
         unitTrades += 1;
         unitTokensSeen.add(unitToken);
         addVolumePoint(unitSeries, volume);
@@ -785,6 +825,7 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
     knownSpotCoins: buildSpotCoinSet(spotMeta, resolver),
     knownPerpCoins: buildPerpCoinSet(perpMeta),
     knownOutcomeCoins: outcomeMeta ? buildOutcomeCoinSet(outcomeMeta) : new Set<string>(),
+    knownUnitSpotIds: buildUnitSpotIdSet(spotMeta),
   }, endTime);
   let spotTwab = summary.totals.spotTwab;
   let portfolioRequestUsed = 0;
