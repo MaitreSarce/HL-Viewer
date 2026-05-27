@@ -1,5 +1,6 @@
 import {
   buildSpotCoinResolver,
+  NonFundingUpdate,
   OutcomeMetaResponse,
   PerpMetaResponse,
   fetchHyperliquidInfo,
@@ -30,6 +31,7 @@ export type TradingSummary = {
     spotVolume: number;
     spotFeesPaid: number;
     spotTwab: number | null;
+    vaultTwab: number | null;
     hypeStakingTwab: number | null;
     unitVolume: number;
     unitFeesPaid: number;
@@ -73,6 +75,15 @@ type PortfolioRange = {
   [key: string]: unknown;
 };
 type PortfolioResponse = Array<[string, PortfolioRange]>;
+type UserVaultEquity = {
+  vaultAddress?: string;
+  equity?: string | number;
+  [key: string]: unknown;
+};
+type VaultDetailsResponse = {
+  portfolio?: Array<[string, { accountValueHistory?: PortfolioHistoryPoint[]; [key: string]: unknown }]>;
+  [key: string]: unknown;
+};
 type DelegatorHistoryUpdate = {
   time?: number;
   delta?: {
@@ -416,6 +427,131 @@ const historyToValuePoints = (rows: PortfolioHistoryPoint[]) =>
     })
     .filter((p): p is { timeSec: number; valueUsd: number } => p !== null);
 
+const valueAtTimeSec = (points: Array<{ timeSec: number; valueUsd: number }>, timeSec: number): number | null => {
+  if (points.length === 0) return null;
+  if (timeSec <= points[0].timeSec) return points[0].valueUsd;
+  let lo = 0;
+  let hi = points.length - 1;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const t = points[mid].timeSec;
+    if (t === timeSec) return points[mid].valueUsd;
+    if (t < timeSec) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return hi >= 0 ? points[hi].valueUsd : points[0].valueUsd;
+};
+
+const parseVaultLedgerDeltaUsd = (delta: Record<string, unknown>): number | null => {
+  const type = readStringKeys(delta, ["type"]).toLowerCase();
+  if (type === "vaultdeposit") {
+    const amount = toFiniteNumber(delta.usdc);
+    return Number.isFinite(amount) && amount > 0 ? amount : null;
+  }
+  if (type === "vaultwithdraw") {
+    const amount = toFiniteNumber(delta.requestedUsd ?? delta.netWithdrawnUsd ?? delta.usdc);
+    return Number.isFinite(amount) && amount > 0 ? -amount : null;
+  }
+  if (type === "vaultdistribution") {
+    const amount = toFiniteNumber(delta.usdc);
+    return Number.isFinite(amount) && amount > 0 ? -amount : null;
+  }
+  return null;
+};
+
+const computeVaultTwabUsd = (
+  spotSeriesPoints: Array<{ timeSec: number; valueUsd: number }>,
+  userVaultEquities: UserVaultEquity[],
+  ledgerUpdates: NonFundingUpdate[],
+  vaultHistoriesByAddress: Map<string, Array<{ timeSec: number; valueUsd: number }>>,
+  endTimeSec: number
+) => {
+  if (spotSeriesPoints.length === 0 || userVaultEquities.length === 0) return null;
+
+  const endSec = Math.floor(endTimeSec);
+  const rawEvents = ledgerUpdates
+    .map((u) => {
+      const delta = (u.delta ?? {}) as Record<string, unknown>;
+      const vault = readStringKeys(delta, ["vault"]).toLowerCase();
+      if (!vault) return null;
+      const deltaUsd = parseVaultLedgerDeltaUsd(delta);
+      if (deltaUsd === null) return null;
+      const tMs = Math.floor(toFiniteNumber(u.time ?? 0));
+      if (tMs <= 0) return null;
+      return { vault, timeSec: Math.floor(tMs / 1000), deltaUsd };
+    })
+    .filter((e): e is { vault: string; timeSec: number; deltaUsd: number } => e !== null);
+
+  const eventsByVault = new Map<string, Array<{ timeSec: number; deltaUsd: number }>>();
+  for (const e of rawEvents) {
+    const list = eventsByVault.get(e.vault) ?? [];
+    list.push({ timeSec: e.timeSec, deltaUsd: e.deltaUsd });
+    eventsByVault.set(e.vault, list);
+  }
+  for (const list of eventsByVault.values()) {
+    list.sort((a, b) => a.timeSec - b.timeSec);
+  }
+
+  const changeTimes = new Set<number>([spotSeriesPoints[0].timeSec, endSec]);
+  for (const p of spotSeriesPoints) changeTimes.add(p.timeSec);
+  for (const [vault, points] of vaultHistoriesByAddress.entries()) {
+    if (points.length === 0) continue;
+    for (const p of points) changeTimes.add(p.timeSec);
+    const events = eventsByVault.get(vault) ?? [];
+    for (const e of events) changeTimes.add(e.timeSec);
+  }
+
+  const unitsByVault = new Map<string, number>();
+  for (const row of userVaultEquities) {
+    const vault = readStringKeys(row, ["vaultAddress"]).toLowerCase();
+    if (!vault) continue;
+    const equityNow = toFiniteNumber((row as UserVaultEquity).equity ?? 0);
+    if (equityNow <= 0) continue;
+    const navSeries = vaultHistoriesByAddress.get(vault) ?? [];
+    const navNow = valueAtTimeSec(navSeries, endSec);
+    if (navNow === null || navNow <= 0) continue;
+    unitsByVault.set(vault, equityNow / navNow);
+  }
+
+  const orderedTimes = [...changeTimes].filter((t) => t > 0).sort((a, b) => a - b);
+  if (orderedTimes.length < 2) return null;
+
+  let area = 0;
+  let lastT = orderedTimes[0];
+  for (const t of orderedTimes) {
+    if (t < lastT) continue;
+
+    let vaultValue = 0;
+    for (const [vault, units] of unitsByVault.entries()) {
+      if (units <= 0) continue;
+      const nav = valueAtTimeSec(vaultHistoriesByAddress.get(vault) ?? [], t);
+      if (nav !== null && nav > 0) vaultValue += units * nav;
+    }
+
+    if (t > lastT) {
+      area += vaultValue * (t - lastT);
+      lastT = t;
+    }
+
+    for (const [vault, events] of eventsByVault.entries()) {
+      if (events.length === 0) continue;
+      const nav = valueAtTimeSec(vaultHistoriesByAddress.get(vault) ?? [], t);
+      if (nav === null || nav <= 0) continue;
+      let units = unitsByVault.get(vault) ?? 0;
+      for (const evt of events) {
+        if (evt.timeSec !== t) continue;
+        units += evt.deltaUsd / nav;
+      }
+      unitsByVault.set(vault, Math.max(0, units));
+    }
+  }
+
+  const duration = Math.max(0, endSec - orderedTimes[0]);
+  if (duration <= 0) return null;
+  const twab = area / duration;
+  return twab > 0 ? twab : null;
+};
+
 const computeStakingTwabFromDelegatorHistory = (
   updates: DelegatorHistoryUpdate[],
   endTimeMs: number,
@@ -714,6 +850,7 @@ export const summarizeTradingFills = (
       spotVolume,
       spotFeesPaid,
       spotTwab,
+      vaultTwab: null,
       hypeStakingTwab: null,
       unitVolume,
       unitFeesPaid,
@@ -828,8 +965,10 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
     knownUnitSpotIds: buildUnitSpotIdSet(spotMeta),
   }, endTime);
   let spotTwab = summary.totals.spotTwab;
+  let vaultTwab: number | null = null;
   let portfolioRequestUsed = 0;
   let stakingRequestUsed = 0;
+  let vaultRequestUsed = 0;
   try {
     portfolioRequestUsed = 1;
     const portfolio = await fetchHyperliquidInfo<PortfolioResponse>({ type: "portfolio", user: address });
@@ -841,10 +980,73 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
       [];
     const officialSpotPoints = historyToValuePoints(officialSpotHistory);
     const officialSpotTwab = computeTwabUsdFromValuePoints(officialSpotPoints, endTime / 1000);
+
+    try {
+      const [vaultEquities, nonFundingRange] = await Promise.all([
+        fetchHyperliquidInfo<UserVaultEquity[]>({ type: "userVaultEquities", user: address }),
+        fetchTimeRangeWithSplit<NonFundingUpdate>({
+          type: "userNonFundingLedgerUpdates",
+          user: address,
+          startTime,
+          endTime,
+          pageLimit: 2000,
+          minWindowMs: 30 * 60 * 1000,
+          maxRequests: 120,
+        }),
+      ]);
+      vaultRequestUsed += 1 + nonFundingRange.requestsUsed;
+
+      const vaultAddresses = new Set<string>();
+      for (const v of Array.isArray(vaultEquities) ? vaultEquities : []) {
+        const vaultAddress = readStringKeys(v, ["vaultAddress"]).toLowerCase();
+        if (vaultAddress) vaultAddresses.add(vaultAddress);
+      }
+      for (const row of nonFundingRange.rows) {
+        const delta = (row.delta ?? {}) as Record<string, unknown>;
+        const vaultAddress = readStringKeys(delta, ["vault"]).toLowerCase();
+        if (vaultAddress) vaultAddresses.add(vaultAddress);
+      }
+
+      const vaultHistoryEntries = await Promise.all(
+        [...vaultAddresses].map(async (vaultAddress) => {
+          try {
+            const details = await fetchHyperliquidInfo<VaultDetailsResponse>({
+              type: "vaultDetails",
+              vaultAddress,
+              user: address,
+            });
+            const allTime = (details.portfolio ?? []).find((row) => Array.isArray(row) && row[0] === "allTime")?.[1];
+            const points = historyToValuePoints((allTime?.accountValueHistory as PortfolioHistoryPoint[] | undefined) ?? []);
+            return [vaultAddress, points] as const;
+          } catch {
+            return [vaultAddress, [] as Array<{ timeSec: number; valueUsd: number }>] as const;
+          }
+        })
+      );
+      vaultRequestUsed += vaultHistoryEntries.length;
+
+      const vaultHistoriesByAddress = new Map<string, Array<{ timeSec: number; valueUsd: number }>>(vaultHistoryEntries);
+      vaultTwab = computeVaultTwabUsd(
+        officialSpotPoints,
+        Array.isArray(vaultEquities) ? vaultEquities : [],
+        nonFundingRange.rows,
+        vaultHistoriesByAddress,
+        endTime / 1000
+      );
+      if (vaultTwab !== null && officialSpotTwab !== null) {
+        spotTwab = Math.max(officialSpotTwab - vaultTwab, 0);
+        warnings.push("Spot/Vault TWAB split uses method 1: userNonFundingLedgerUpdates flows + vaultDetails NAV histories.");
+      }
+    } catch {
+      warnings.push("Could not compute Vault TWAB split from vault flows/NAV history; fallback to merged Spot TWAB.");
+    }
+
     if (officialSpotTwab !== null) {
-      spotTwab = officialSpotTwab;
       summary.charts.spotTwab = computeTwabSeriesUsdFromValuePoints(officialSpotPoints, endTime / 1000);
-      warnings.push("Spot TWAB now uses Hyperliquid portfolio spotState.accountValueHistory (official source).");
+      if (spotTwab === summary.totals.spotTwab) {
+        spotTwab = officialSpotTwab;
+        warnings.push("Spot TWAB now uses Hyperliquid portfolio spotState.accountValueHistory (official source).");
+      }
     }
   } catch {
     warnings.push("Could not load portfolio spotState history, so Spot TWAB uses fill-based reconstruction fallback.");
@@ -869,6 +1071,7 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
   }
 
   summary.totals.spotTwab = spotTwab;
+  summary.totals.vaultTwab = vaultTwab;
   if (summary.totals.spotTwab === null) {
     warnings.push("Spot TWAB was unavailable (official history missing and fallback had insufficient data).");
   }
@@ -879,7 +1082,13 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
     period: { startTime, endTime },
     meta: {
       requestsUsed:
-        rangeResult.requestsUsed + (usedFallback ? 1 : 0) + 2 + outcomeMetaRequestUsed + portfolioRequestUsed + stakingRequestUsed,
+        rangeResult.requestsUsed +
+        (usedFallback ? 1 : 0) +
+        2 +
+        outcomeMetaRequestUsed +
+        portfolioRequestUsed +
+        stakingRequestUsed +
+        vaultRequestUsed,
       usedFallback,
       truncated: rangeResult.truncated,
       warnings,

@@ -73,7 +73,11 @@ export default function DetailsPage() {
         />
         <Metric
           name="Spot TWAB (USD)"
-          explanation="Computed with the shared TWAB engine: time integral of USD portfolio value from first available spot history point to now. Source is Hyperliquid `portfolio` -> `allTime.spotState.accountValueHistory`; values are integrated as `sum(valueUSD * duration) / totalDuration` with exact timestamps."
+          explanation="Computed as SpotState TWAB minus Vault TWAB (method 1 split). SpotState TWAB comes from Hyperliquid `portfolio -> allTime.spotState.accountValueHistory`, then vault component is removed to isolate spot-held value."
+        />
+        <Metric
+          name="Vault TWAB (USD)"
+          explanation="Method 1 split: reconstruct user vault exposure using `userNonFundingLedgerUpdates` (`vaultDeposit`, `vaultWithdraw`, `vaultDistribution`) and each vault's NAV history from `vaultDetails -> portfolio.allTime.accountValueHistory`, then compute time-weighted average USD value."
         />
         <Metric
           name="HYPE Staking TWAB"

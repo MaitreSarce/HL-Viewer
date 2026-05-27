@@ -13,6 +13,7 @@ type TradingData = {
     spotVolume: number;
     spotFeesPaid: number;
     spotTwab: number | null;
+    vaultTwab: number | null;
     hypeStakingTwab: number | null;
     unitVolume: number;
     unitFeesPaid: number;
@@ -594,6 +595,10 @@ export default function Home() {
                     {
                       label: "TWAB (USD)",
                       value: formatTwabWithAge(trading.totals.spotTwab, walletAgeDays, "usd"),
+                    },
+                    {
+                      label: "Vault TWAB (USD)",
+                      value: formatTwabWithAge(trading.totals.vaultTwab, walletAgeDays, "usd"),
                     },
                     {
                       label: "HYPE Staking TWAB",
