@@ -123,21 +123,15 @@ const ZoneCard = ({
   </article>
 );
 
-const chartDisplayConfig = (count: number) => {
-  const labelStep = count > 42 ? 8 : count > 30 ? 6 : count > 20 ? 4 : count > 12 ? 2 : 1;
-  const valueStep = count > 42 ? 6 : count > 30 ? 4 : count > 20 ? 3 : count > 12 ? 2 : 1;
-  return { labelStep, valueStep };
-};
-
 const HistogramCard = ({ title, rows }: { title: string; rows: Array<{ label: string; value: number }> }) => {
   const [zoom, setZoom] = useState(1);
   const [expanded, setExpanded] = useState(false);
   const max = rows.reduce((acc, row) => (Math.abs(row.value) > acc ? Math.abs(row.value) : acc), 0);
   const maxItems = 48;
   const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
-  const { labelStep, valueStep } = chartDisplayConfig(displayedRows.length);
+  const columnWidthPx = 44;
   const chartHeight = Math.round(220 * zoom);
-  const minWidth = Math.max(520, Math.round(displayedRows.length * 28 * zoom));
+  const minWidth = Math.max(520, Math.round(displayedRows.length * columnWidthPx * zoom));
   const chartBody = (
     <div className="space-y-2">
       <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
@@ -155,25 +149,23 @@ const HistogramCard = ({ title, rows }: { title: string; rows: Array<{ label: st
                   <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
                   <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
                 </div>
-                {displayedRows.map((row, idx) => {
+                {displayedRows.map((row) => {
                   const heightPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
                   const heightPx = (heightPct / 100) * (chartHeight - 20);
                   return (
-                    <div key={`${title}-bar-${row.label}`} className="relative flex h-full min-w-6 flex-1 items-end justify-center">
-                      {idx % valueStep === 0 ? (
-                        <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${heightPx}px` }} title={formatUsd(row.value)}>
-                          {formatUsdCompact(row.value)}
-                        </span>
-                      ) : null}
+                    <div key={`${title}-bar-${row.label}`} className="relative flex h-full w-11 flex-none items-end justify-center">
+                      <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${heightPx}px` }} title={formatUsd(row.value)}>
+                        {formatUsdCompact(row.value)}
+                      </span>
                       <div className="w-full rounded-t bg-slate-700" style={{ height: `${heightPct}%` }} />
                     </div>
                   );
                 })}
               </div>
               <div className="mt-1 flex gap-1 px-2">
-                {displayedRows.map((row, idx) => (
-                  <span key={`${title}-label-${row.label}`} className="min-w-6 flex-1 truncate text-center text-[10px] text-slate-600" title={row.label}>
-                    {idx % labelStep === 0 ? row.label : ""}
+                {displayedRows.map((row) => (
+                  <span key={`${title}-label-${row.label}`} className="w-11 flex-none truncate text-center text-[10px] text-slate-600" title={row.label}>
+                    {row.label}
                   </span>
                 ))}
               </div>
@@ -218,9 +210,9 @@ const DualHistogramCard = ({ title, rows }: { title: string; rows: Array<{ label
   const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
   const maxVolume = displayedRows.reduce((acc, row) => (Math.abs(row.volume) > acc ? Math.abs(row.volume) : acc), 0);
   const maxPnl = displayedRows.reduce((acc, row) => (Math.abs(row.pnl) > acc ? Math.abs(row.pnl) : acc), 0);
-  const { labelStep, valueStep } = chartDisplayConfig(displayedRows.length);
+  const columnWidthPx = 52;
   const chartHeight = Math.round(220 * zoom);
-  const minWidth = Math.max(560, Math.round(displayedRows.length * 32 * zoom));
+  const minWidth = Math.max(560, Math.round(displayedRows.length * columnWidthPx * zoom));
   const chartBody = (
     <div className="space-y-2">
       <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
@@ -242,17 +234,15 @@ const DualHistogramCard = ({ title, rows }: { title: string; rows: Array<{ label
                   <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
                   <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
                 </div>
-                {displayedRows.map((row, idx) => {
+                {displayedRows.map((row) => {
                   const volumeHeightPct = maxVolume > 0 ? Math.max(2, (Math.abs(row.volume) / maxVolume) * 100) : 0;
                   const pnlHeightPct = maxPnl > 0 ? Math.max(2, (Math.abs(row.pnl) / maxPnl) * 100) : 0;
                   const topPx = Math.max((volumeHeightPct / 100) * (chartHeight - 20), (pnlHeightPct / 100) * (chartHeight - 20));
                   return (
-                    <div key={`${title}-pair-${row.label}`} className="relative flex h-full min-w-7 flex-1 items-end justify-center gap-0.5">
-                      {idx % valueStep === 0 ? (
-                        <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${topPx}px` }}>
-                          {formatUsdCompact(row.volume)}/{formatUsdCompact(row.pnl)}
-                        </span>
-                      ) : null}
+                    <div key={`${title}-pair-${row.label}`} className="relative flex h-full w-[52px] flex-none items-end justify-center gap-0.5">
+                      <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${topPx}px` }}>
+                        {formatUsdCompact(row.volume)}/{formatUsdCompact(row.pnl)}
+                      </span>
                       <div className="w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeightPct}%` }} title={`Volume: ${formatUsd(row.volume)}`} />
                       <div className="w-1/2 rounded-t bg-emerald-600" style={{ height: `${pnlHeightPct}%` }} title={`PNL: ${formatUsd(row.pnl)}`} />
                     </div>
@@ -260,9 +250,9 @@ const DualHistogramCard = ({ title, rows }: { title: string; rows: Array<{ label
                 })}
               </div>
               <div className="mt-1 flex gap-1 px-2">
-                {displayedRows.map((row, idx) => (
-                  <span key={`${title}-label-${row.label}`} className="min-w-7 flex-1 truncate text-center text-[10px] text-slate-600" title={row.label}>
-                    {idx % labelStep === 0 ? row.label : ""}
+                {displayedRows.map((row) => (
+                  <span key={`${title}-label-${row.label}`} className="w-[52px] flex-none truncate text-center text-[10px] text-slate-600" title={row.label}>
+                    {row.label}
                   </span>
                 ))}
               </div>
