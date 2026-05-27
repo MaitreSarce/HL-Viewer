@@ -130,140 +130,182 @@ const chartDisplayConfig = (count: number) => {
 };
 
 const HistogramCard = ({ title, rows }: { title: string; rows: Array<{ label: string; value: number }> }) => {
+  const [zoom, setZoom] = useState(1);
+  const [expanded, setExpanded] = useState(false);
   const max = rows.reduce((acc, row) => (Math.abs(row.value) > acc ? Math.abs(row.value) : acc), 0);
   const maxItems = 48;
   const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
   const { labelStep, valueStep } = chartDisplayConfig(displayedRows.length);
-  const chartHeight = 220;
-  return (
-    <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
-      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
-      {displayedRows.length === 0 ? (
-        <p className="text-xs text-slate-500">No data.</p>
-      ) : (
-        <div className="space-y-2">
-          <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
-            <div className="flex gap-2">
-              <div className="flex w-14 flex-col justify-between text-right text-[10px] text-slate-500">
-                <span>{formatUsdCompact(max)}</span>
-                <span>{formatUsdCompact(max * 0.66)}</span>
-                <span>{formatUsdCompact(max * 0.33)}</span>
-                <span>$0</span>
-              </div>
-              <div className="overflow-x-auto">
-                <div className="relative" style={{ minWidth: `${Math.max(520, displayedRows.length * 28)}px` }}>
-                  <div className="relative flex items-end gap-1 border-b border-l border-slate-300 px-2 pb-1" style={{ height: `${chartHeight}px` }}>
-                    <div className="pointer-events-none absolute inset-0">
-                      <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
-                      <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
-                    </div>
-                    {displayedRows.map((row, idx) => {
-                      const heightPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
-                      const heightPx = (heightPct / 100) * (chartHeight - 20);
-                      return (
-                        <div key={`${title}-bar-${row.label}`} className="relative flex min-w-6 flex-1 items-end justify-center">
-                          {idx % valueStep === 0 ? (
-                            <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${heightPx}px` }} title={formatUsd(row.value)}>
-                              {formatUsdCompact(row.value)}
-                            </span>
-                          ) : null}
-                          <div className="w-full rounded-t bg-slate-700" style={{ height: `${heightPct}%` }} />
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="mt-1 flex gap-1 px-2">
-                    {displayedRows.map((row, idx) => (
-                      <span key={`${title}-label-${row.label}`} className="min-w-6 flex-1 truncate text-center text-[10px] text-slate-600" title={row.label}>
-                        {idx % labelStep === 0 ? row.label : ""}
-                      </span>
-                    ))}
-                  </div>
+  const chartHeight = Math.round(220 * zoom);
+  const minWidth = Math.max(520, Math.round(displayedRows.length * 28 * zoom));
+  const chartBody = (
+    <div className="space-y-2">
+      <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+        <div className="flex gap-2">
+          <div className="flex w-14 flex-col justify-between text-right text-[10px] text-slate-500">
+            <span>{formatUsdCompact(max)}</span>
+            <span>{formatUsdCompact(max * 0.66)}</span>
+            <span>{formatUsdCompact(max * 0.33)}</span>
+            <span>$0</span>
+          </div>
+          <div className="overflow-x-auto">
+            <div className="relative" style={{ minWidth: `${minWidth}px` }}>
+              <div className="relative flex items-end gap-1 border-b border-l border-slate-300 px-2 pb-1" style={{ height: `${chartHeight}px` }}>
+                <div className="pointer-events-none absolute inset-0">
+                  <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
+                  <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
                 </div>
+                {displayedRows.map((row, idx) => {
+                  const heightPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
+                  const heightPx = (heightPct / 100) * (chartHeight - 20);
+                  return (
+                    <div key={`${title}-bar-${row.label}`} className="relative flex h-full min-w-6 flex-1 items-end justify-center">
+                      {idx % valueStep === 0 ? (
+                        <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${heightPx}px` }} title={formatUsd(row.value)}>
+                          {formatUsdCompact(row.value)}
+                        </span>
+                      ) : null}
+                      <div className="w-full rounded-t bg-slate-700" style={{ height: `${heightPct}%` }} />
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-1 flex gap-1 px-2">
+                {displayedRows.map((row, idx) => (
+                  <span key={`${title}-label-${row.label}`} className="min-w-6 flex-1 truncate text-center text-[10px] text-slate-600" title={row.label}>
+                    {idx % labelStep === 0 ? row.label : ""}
+                  </span>
+                ))}
               </div>
             </div>
           </div>
-          {rows.length > maxItems ? <p className="text-[10px] text-slate-500">Showing last {maxItems} periods.</p> : null}
         </div>
+      </div>
+      {rows.length > maxItems ? <p className="text-[10px] text-slate-500">Showing last {maxItems} periods.</p> : null}
+    </div>
+  );
+  return (
+    <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
+        <div className="flex items-center gap-1">
+          <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setZoom((z) => Math.max(0.6, +(z - 0.2).toFixed(1)))}>-</button>
+          <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setZoom((z) => Math.min(2.4, +(z + 0.2).toFixed(1)))}>+</button>
+          <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setExpanded(true)}>Expand</button>
+        </div>
+      </div>
+      {displayedRows.length === 0 ? (
+        <p className="text-xs text-slate-500">No data.</p>
+      ) : (
+        chartBody
       )}
+      {expanded ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setExpanded(false)}>
+          <div className="max-h-[92vh] w-[96vw] overflow-auto rounded-xl bg-white p-4" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 flex justify-end"><button className="rounded border px-2 py-1 text-xs" onClick={() => setExpanded(false)}>Close</button></div>
+            {chartBody}
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 };
 
 const DualHistogramCard = ({ title, rows }: { title: string; rows: Array<{ label: string; volume: number; pnl: number }> }) => {
+  const [zoom, setZoom] = useState(1);
+  const [expanded, setExpanded] = useState(false);
   const maxItems = 48;
   const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
   const maxVolume = displayedRows.reduce((acc, row) => (Math.abs(row.volume) > acc ? Math.abs(row.volume) : acc), 0);
   const maxPnl = displayedRows.reduce((acc, row) => (Math.abs(row.pnl) > acc ? Math.abs(row.pnl) : acc), 0);
   const { labelStep, valueStep } = chartDisplayConfig(displayedRows.length);
-  const chartHeight = 220;
+  const chartHeight = Math.round(220 * zoom);
+  const minWidth = Math.max(560, Math.round(displayedRows.length * 32 * zoom));
+  const chartBody = (
+    <div className="space-y-2">
+      <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+        <div className="mb-1 flex items-center justify-between text-[10px]">
+          <span className="font-medium text-sky-700">Y-left Volume</span>
+          <span className="font-medium text-emerald-700">Y-right PNL</span>
+        </div>
+        <div className="flex gap-2">
+          <div className="flex w-14 flex-col justify-between text-right text-[10px] text-sky-700">
+            <span>{formatUsdCompact(maxVolume)}</span>
+            <span>{formatUsdCompact(maxVolume * 0.66)}</span>
+            <span>{formatUsdCompact(maxVolume * 0.33)}</span>
+            <span>$0</span>
+          </div>
+          <div className="overflow-x-auto">
+            <div className="relative" style={{ minWidth: `${minWidth}px` }}>
+              <div className="relative flex items-end gap-1 border-b border-l border-r border-slate-300 px-2 pb-1" style={{ height: `${chartHeight}px` }}>
+                <div className="pointer-events-none absolute inset-0">
+                  <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
+                  <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
+                </div>
+                {displayedRows.map((row, idx) => {
+                  const volumeHeightPct = maxVolume > 0 ? Math.max(2, (Math.abs(row.volume) / maxVolume) * 100) : 0;
+                  const pnlHeightPct = maxPnl > 0 ? Math.max(2, (Math.abs(row.pnl) / maxPnl) * 100) : 0;
+                  const topPx = Math.max((volumeHeightPct / 100) * (chartHeight - 20), (pnlHeightPct / 100) * (chartHeight - 20));
+                  return (
+                    <div key={`${title}-pair-${row.label}`} className="relative flex h-full min-w-7 flex-1 items-end justify-center gap-0.5">
+                      {idx % valueStep === 0 ? (
+                        <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${topPx}px` }}>
+                          {formatUsdCompact(row.volume)}/{formatUsdCompact(row.pnl)}
+                        </span>
+                      ) : null}
+                      <div className="w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeightPct}%` }} title={`Volume: ${formatUsd(row.volume)}`} />
+                      <div className="w-1/2 rounded-t bg-emerald-600" style={{ height: `${pnlHeightPct}%` }} title={`PNL: ${formatUsd(row.pnl)}`} />
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-1 flex gap-1 px-2">
+                {displayedRows.map((row, idx) => (
+                  <span key={`${title}-label-${row.label}`} className="min-w-7 flex-1 truncate text-center text-[10px] text-slate-600" title={row.label}>
+                    {idx % labelStep === 0 ? row.label : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="flex w-14 flex-col justify-between text-[10px] text-emerald-700">
+            <span>{formatUsdCompact(maxPnl)}</span>
+            <span>{formatUsdCompact(maxPnl * 0.66)}</span>
+            <span>{formatUsdCompact(maxPnl * 0.33)}</span>
+            <span>$0</span>
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-4 text-[10px]">
+        <span className="inline-flex items-center gap-1 text-sky-700"><span className="h-2 w-2 rounded bg-sky-600" />Volume</span>
+        <span className="inline-flex items-center gap-1 text-emerald-700"><span className="h-2 w-2 rounded bg-emerald-600" />PNL</span>
+      </div>
+      {rows.length > maxItems ? <p className="text-[10px] text-slate-500">Showing last {maxItems} periods.</p> : null}
+    </div>
+  );
   return (
     <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
-      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
+        <div className="flex items-center gap-1">
+          <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setZoom((z) => Math.max(0.6, +(z - 0.2).toFixed(1)))}>-</button>
+          <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setZoom((z) => Math.min(2.4, +(z + 0.2).toFixed(1)))}>+</button>
+          <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setExpanded(true)}>Expand</button>
+        </div>
+      </div>
       {displayedRows.length === 0 ? (
         <p className="text-xs text-slate-500">No data.</p>
       ) : (
-        <div className="space-y-2">
-          <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
-            <div className="mb-1 flex items-center justify-between text-[10px]">
-              <span className="font-medium text-sky-700">Y-left Volume</span>
-              <span className="font-medium text-emerald-700">Y-right PNL</span>
-            </div>
-            <div className="flex gap-2">
-              <div className="flex w-14 flex-col justify-between text-right text-[10px] text-sky-700">
-                <span>{formatUsdCompact(maxVolume)}</span>
-                <span>{formatUsdCompact(maxVolume * 0.66)}</span>
-                <span>{formatUsdCompact(maxVolume * 0.33)}</span>
-                <span>$0</span>
-              </div>
-              <div className="overflow-x-auto">
-                <div className="relative" style={{ minWidth: `${Math.max(560, displayedRows.length * 32)}px` }}>
-                  <div className="relative flex items-end gap-1 border-b border-l border-r border-slate-300 px-2 pb-1" style={{ height: `${chartHeight}px` }}>
-                    <div className="pointer-events-none absolute inset-0">
-                      <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
-                      <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
-                    </div>
-                    {displayedRows.map((row, idx) => {
-                      const volumeHeightPct = maxVolume > 0 ? Math.max(2, (Math.abs(row.volume) / maxVolume) * 100) : 0;
-                      const pnlHeightPct = maxPnl > 0 ? Math.max(2, (Math.abs(row.pnl) / maxPnl) * 100) : 0;
-                      const topPx = Math.max((volumeHeightPct / 100) * (chartHeight - 20), (pnlHeightPct / 100) * (chartHeight - 20));
-                      return (
-                        <div key={`${title}-pair-${row.label}`} className="relative flex min-w-7 flex-1 items-end justify-center gap-0.5">
-                          {idx % valueStep === 0 ? (
-                            <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${topPx}px` }}>
-                              {formatUsdCompact(row.volume)}/{formatUsdCompact(row.pnl)}
-                            </span>
-                          ) : null}
-                          <div className="w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeightPct}%` }} title={`Volume: ${formatUsd(row.volume)}`} />
-                          <div className="w-1/2 rounded-t bg-emerald-600" style={{ height: `${pnlHeightPct}%` }} title={`PNL: ${formatUsd(row.pnl)}`} />
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="mt-1 flex gap-1 px-2">
-                    {displayedRows.map((row, idx) => (
-                      <span key={`${title}-label-${row.label}`} className="min-w-7 flex-1 truncate text-center text-[10px] text-slate-600" title={row.label}>
-                        {idx % labelStep === 0 ? row.label : ""}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              <div className="flex w-14 flex-col justify-between text-[10px] text-emerald-700">
-                <span>{formatUsdCompact(maxPnl)}</span>
-                <span>{formatUsdCompact(maxPnl * 0.66)}</span>
-                <span>{formatUsdCompact(maxPnl * 0.33)}</span>
-                <span>$0</span>
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-4 text-[10px]">
-            <span className="inline-flex items-center gap-1 text-sky-700"><span className="h-2 w-2 rounded bg-sky-600" />Volume</span>
-            <span className="inline-flex items-center gap-1 text-emerald-700"><span className="h-2 w-2 rounded bg-emerald-600" />PNL</span>
-          </div>
-          {rows.length > maxItems ? <p className="text-[10px] text-slate-500">Showing last {maxItems} periods.</p> : null}
-        </div>
+        chartBody
       )}
+      {expanded ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setExpanded(false)}>
+          <div className="max-h-[92vh] w-[96vw] overflow-auto rounded-xl bg-white p-4" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 flex justify-end"><button className="rounded border px-2 py-1 text-xs" onClick={() => setExpanded(false)}>Close</button></div>
+            {chartBody}
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 };
