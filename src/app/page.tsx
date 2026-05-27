@@ -145,8 +145,12 @@ const HistogramCard = ({
   const minNegative = displayedRows.reduce((acc, row) => (row.value < acc ? row.value : acc), 0);
   const negativeAbs = Math.abs(minNegative);
   const zeroFromBottom =
-    allowNegative && maxPositive > 0 && negativeAbs > 0
-      ? (negativeAbs / (maxPositive + negativeAbs)) * plotHeight
+    allowNegative
+      ? maxPositive > 0 && negativeAbs > 0
+        ? (negativeAbs / (maxPositive + negativeAbs)) * plotHeight
+        : maxPositive > 0
+          ? 0
+          : plotHeight
       : 0;
   const topSpan = allowNegative ? plotHeight - zeroFromBottom : plotHeight;
   const bottomSpan = allowNegative ? zeroFromBottom : 0;
