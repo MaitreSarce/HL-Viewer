@@ -36,7 +36,6 @@ export type TradingSummary = {
 export type TradingApiResult = TradingSummary & {
   source: "api";
   address: string;
-  days: number;
   period: { startTime: number; endTime: number };
   meta: {
     requestsUsed: number;
@@ -190,10 +189,9 @@ export const summarizeTradingFills = (fills: HyperliquidFill[], resolver?: CoinR
   };
 };
 
-export const fetchTradingStatsFromApi = async (address: string, days: number): Promise<TradingApiResult> => {
+export const fetchTradingStatsFromApi = async (address: string): Promise<TradingApiResult> => {
   const endTime = Date.now();
-  const safeDays = Math.max(1, Math.floor(days || 1));
-  const startTime = endTime - safeDays * 24 * 60 * 60 * 1000;
+  const startTime = 0;
 
   const [spotMeta, rangeResult] = await Promise.all([
     fetchHyperliquidInfo<SpotMetaResponse>({ type: "spotMeta" }),
@@ -235,7 +233,6 @@ export const fetchTradingStatsFromApi = async (address: string, days: number): P
   return {
     source: "api",
     address,
-    days: safeDays,
     period: { startTime, endTime },
     meta: {
       requestsUsed: rangeResult.requestsUsed + (usedFallback ? 1 : 0),
