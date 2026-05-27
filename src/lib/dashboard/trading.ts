@@ -766,6 +766,8 @@ const computeUnitTwabUsd = (
     priceInQuote: number;
   };
 
+  const isUnitAsset = (asset: string) => matchUnitToken(asset.toUpperCase()) !== null;
+
   const events: SpotEvent[] = [];
   for (const fill of fills) {
     const rawCoin = getFillCoinRaw(fill);
@@ -806,6 +808,7 @@ const computeUnitTwabUsd = (
   const portfolioUsdValue = () => {
     let value = 0;
     for (const [asset, qty] of balancesByAsset.entries()) {
+      if (!isUnitAsset(asset)) continue;
       if (!Number.isFinite(qty) || qty <= 0) continue;
       const price = usdPriceByAsset.get(asset) ?? 0;
       if (price > 0) value += qty * price;
