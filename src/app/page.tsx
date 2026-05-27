@@ -101,6 +101,14 @@ const formatNum = (value: number) =>
   }).format(value);
 
 const formatPct = (value: number) => `${value.toFixed(2)}%`;
+const formatTwabWithAge = (twab: number | null, ageDays: number | null, unit: "usd" | "raw") => {
+  if (twab === null) return "N/A";
+  const base = unit === "usd" ? formatUsd(twab) : formatNum(twab);
+  if (ageDays === null || ageDays <= 0) return base;
+  const product = twab * ageDays;
+  const productText = unit === "usd" ? formatUsd(product) : formatNum(product);
+  return `${base} (${productText})`;
+};
 
 const StatRow = ({ label, value }: { label: string; value: string }) => (
   <div className="flex items-center justify-between gap-4 text-sm">
@@ -389,6 +397,7 @@ export default function Home() {
   const tradingWarnings = useMemo(() => trading?.meta?.warnings ?? [], [trading]);
   const hevmWarnings = useMemo(() => hevm?.meta?.warnings ?? [], [hevm]);
   const unitWarnings = useMemo(() => unitBridge?.meta?.warnings ?? [], [unitBridge]);
+  const walletAgeDays = hevm?.stats?.sinceFirstTx?.days ?? null;
 
   const onAnalyzeApi = async (event: FormEvent) => {
     event.preventDefault();
@@ -582,11 +591,11 @@ export default function Home() {
                     { label: "Fees paid", value: formatUsd(trading.totals.spotFeesPaid) },
                     {
                       label: "TWAB (USD)",
-                      value: trading.totals.spotTwab === null ? "N/A" : formatUsd(trading.totals.spotTwab),
+                      value: formatTwabWithAge(trading.totals.spotTwab, walletAgeDays, "usd"),
                     },
                     {
                       label: "HYPE Staking TWAB",
-                      value: trading.totals.hypeStakingTwab === null ? "N/A" : formatNum(trading.totals.hypeStakingTwab),
+                      value: formatTwabWithAge(trading.totals.hypeStakingTwab, walletAgeDays, "raw"),
                     },
                   ]}
                 />
@@ -666,7 +675,7 @@ export default function Home() {
                 <ZoneCard
                   title="HEVM Activity"
                   rows={[
-                    { label: "TWAB (USD)", value: hevm.stats.twab === null ? "N/A" : formatUsd(hevm.stats.twab) },
+                    { label: "TWAB (USD)", value: formatTwabWithAge(hevm.stats.twab, hevm.stats.sinceFirstTx.days, "usd") },
                     { label: "Volume", value: formatUsd(hevm.stats.volume) },
                     { label: "Fees paid", value: formatUsd(hevm.stats.feesPaid) },
                     { label: "Different contracts", value: formatNum(hevm.stats.contractsCount) },

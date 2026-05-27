@@ -347,7 +347,8 @@ const historyToValuePoints = (rows: PortfolioHistoryPoint[]) =>
   rows
     .map((row) => {
       if (!Array.isArray(row) || row.length < 2) return null;
-      const timeSec = Math.floor(toFiniteNumber(row[0]) / 1000);
+      const rawTs = toFiniteNumber(row[0]);
+      const timeSec = rawTs > 1e12 ? Math.floor(rawTs / 1000) : Math.floor(rawTs);
       const valueUsd = toFiniteNumber(row[1]);
       if (timeSec <= 0 || !Number.isFinite(valueUsd)) return null;
       return { timeSec, valueUsd };
@@ -760,11 +761,10 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
     portfolioRequestUsed = 1;
     const portfolio = await fetchHyperliquidInfo<PortfolioResponse>({ type: "portfolio", user: address });
     const allTime = portfolio.find((row) => Array.isArray(row) && row[0] === "allTime")?.[1];
-    // Prefer the canonical portfolio shape from Hyperliquid docs: allTime.accountValueHistory.
-    // Keep the older nested path as compatibility fallback.
+    // Spot TWAB should use spot-state history first; fallback to allTime account history if missing.
     const officialSpotHistory =
-      (allTime?.accountValueHistory as PortfolioHistoryPoint[] | undefined) ??
       (allTime?.spotState?.accountValueHistory as PortfolioHistoryPoint[] | undefined) ??
+      (allTime?.accountValueHistory as PortfolioHistoryPoint[] | undefined) ??
       [];
     const officialSpotPoints = historyToValuePoints(officialSpotHistory);
     const officialSpotTwab = computeTwabUsdFromValuePoints(officialSpotPoints, endTime / 1000);
