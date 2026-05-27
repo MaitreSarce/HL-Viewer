@@ -131,6 +131,7 @@ const HistogramCard = ({ title, rows }: { title: string; rows: Array<{ label: st
   const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
   const columnWidthPx = 44;
   const chartHeight = Math.round(220 * zoom);
+  const plotHeight = chartHeight - 26;
   const minWidth = Math.max(520, Math.round(displayedRows.length * columnWidthPx * zoom));
   const chartBody = (
     <div className="space-y-2">
@@ -151,13 +152,13 @@ const HistogramCard = ({ title, rows }: { title: string; rows: Array<{ label: st
                 </div>
                 {displayedRows.map((row) => {
                   const heightPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
-                  const heightPx = (heightPct / 100) * (chartHeight - 20);
+                  const heightPx = (heightPct / 100) * plotHeight;
                   return (
                     <div key={`${title}-bar-${row.label}`} className="relative flex h-full w-11 flex-none items-end justify-center">
-                      <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${heightPx}px` }} title={formatUsd(row.value)}>
+                      <span className="absolute text-[9px] leading-none text-slate-700" style={{ bottom: `${heightPx + 4}px` }} title={formatUsd(row.value)}>
                         {formatUsdCompact(row.value)}
                       </span>
-                      <div className="w-full rounded-t bg-slate-700" style={{ height: `${heightPct}%` }} />
+                      <div className="w-full rounded-t bg-slate-700" style={{ height: `${heightPx}px` }} />
                     </div>
                   );
                 })}
@@ -210,9 +211,21 @@ const DualHistogramCard = ({ title, rows }: { title: string; rows: Array<{ label
   const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
   const maxVolume = displayedRows.reduce((acc, row) => (Math.abs(row.volume) > acc ? Math.abs(row.volume) : acc), 0);
   const maxPnl = displayedRows.reduce((acc, row) => (Math.abs(row.pnl) > acc ? Math.abs(row.pnl) : acc), 0);
+  const maxPnlPositive = displayedRows.reduce((acc, row) => (row.pnl > acc ? row.pnl : acc), 0);
+  const minPnlNegative = displayedRows.reduce((acc, row) => (row.pnl < acc ? row.pnl : acc), 0);
+  const pnlNegativeAbs = Math.abs(minPnlNegative);
   const columnWidthPx = 52;
   const chartHeight = Math.round(220 * zoom);
+  const plotHeight = chartHeight - 26;
   const minWidth = Math.max(560, Math.round(displayedRows.length * columnWidthPx * zoom));
+  const zeroFromBottom =
+    maxPnlPositive > 0 && pnlNegativeAbs > 0
+      ? (pnlNegativeAbs / (maxPnlPositive + pnlNegativeAbs)) * plotHeight
+      : maxPnlPositive > 0
+        ? 0
+        : plotHeight;
+  const pnlTopSpan = plotHeight - zeroFromBottom;
+  const pnlBottomSpan = zeroFromBottom;
   const chartBody = (
     <div className="space-y-2">
       <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
@@ -233,18 +246,36 @@ const DualHistogramCard = ({ title, rows }: { title: string; rows: Array<{ label
                 <div className="pointer-events-none absolute inset-0">
                   <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
                   <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
+                  <div className="absolute left-0 right-0 border-t-2 border-slate-300" style={{ top: `${chartHeight - zeroFromBottom}px` }} />
                 </div>
                 {displayedRows.map((row) => {
                   const volumeHeightPct = maxVolume > 0 ? Math.max(2, (Math.abs(row.volume) / maxVolume) * 100) : 0;
-                  const pnlHeightPct = maxPnl > 0 ? Math.max(2, (Math.abs(row.pnl) / maxPnl) * 100) : 0;
-                  const topPx = Math.max((volumeHeightPct / 100) * (chartHeight - 20), (pnlHeightPct / 100) * (chartHeight - 20));
+                  const volumeHeightPx = (volumeHeightPct / 100) * plotHeight;
+                  const pnlHeightPx =
+                    row.pnl >= 0
+                      ? maxPnlPositive > 0
+                        ? Math.max(2, (row.pnl / maxPnlPositive) * Math.max(0, pnlTopSpan))
+                        : 0
+                      : pnlNegativeAbs > 0
+                        ? Math.max(2, (Math.abs(row.pnl) / pnlNegativeAbs) * Math.max(0, pnlBottomSpan))
+                        : 0;
+                  const pnlLabelAnchorPx = row.pnl >= 0 ? zeroFromBottom + pnlHeightPx : zeroFromBottom;
+                  const topPx = Math.max(volumeHeightPx, pnlLabelAnchorPx);
                   return (
                     <div key={`${title}-pair-${row.label}`} className="relative flex h-full w-[52px] flex-none items-end justify-center gap-0.5">
-                      <span className="absolute -translate-y-1 text-[9px] leading-none text-slate-700" style={{ bottom: `${topPx}px` }}>
+                      <span className="absolute text-[9px] leading-none text-slate-700" style={{ bottom: `${topPx + 4}px` }}>
                         {formatUsdCompact(row.volume)}/{formatUsdCompact(row.pnl)}
                       </span>
-                      <div className="w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeightPct}%` }} title={`Volume: ${formatUsd(row.volume)}`} />
-                      <div className="w-1/2 rounded-t bg-emerald-600" style={{ height: `${pnlHeightPct}%` }} title={`PNL: ${formatUsd(row.pnl)}`} />
+                      <div className="w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeightPx}px` }} title={`Volume: ${formatUsd(row.volume)}`} />
+                      <div
+                        className="absolute right-0 rounded-t bg-emerald-600"
+                        style={{
+                          width: "calc(50% - 1px)",
+                          height: `${pnlHeightPx}px`,
+                          bottom: `${row.pnl >= 0 ? zeroFromBottom : zeroFromBottom - pnlHeightPx}px`,
+                        }}
+                        title={`PNL: ${formatUsd(row.pnl)}`}
+                      />
                     </div>
                   );
                 })}
