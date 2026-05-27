@@ -246,11 +246,10 @@ const DualHistogramCard = ({ title, rows }: { title: string; rows: Array<{ label
                 <div className="pointer-events-none absolute inset-0">
                   <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
                   <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
-                  <div className="absolute left-0 right-0 border-t-2 border-slate-300" style={{ top: `${chartHeight - zeroFromBottom}px` }} />
+                  <div className="absolute left-0 right-0 border-t-2 border-slate-300" style={{ bottom: `${zeroFromBottom}px` }} />
                 </div>
                 {displayedRows.map((row) => {
-                  const volumeHeightPct = maxVolume > 0 ? Math.max(2, (Math.abs(row.volume) / maxVolume) * 100) : 0;
-                  const volumeHeightPx = (volumeHeightPct / 100) * plotHeight;
+                  const volumeHeightPx = maxVolume > 0 ? Math.max(2, (Math.abs(row.volume) / maxVolume) * Math.max(0, pnlTopSpan)) : 0;
                   const pnlHeightPx =
                     row.pnl >= 0
                       ? maxPnlPositive > 0
@@ -266,9 +265,9 @@ const DualHistogramCard = ({ title, rows }: { title: string; rows: Array<{ label
                       <span className="absolute text-[9px] leading-none text-slate-700" style={{ bottom: `${topPx + 4}px` }}>
                         {formatUsdCompact(row.volume)}/{formatUsdCompact(row.pnl)}
                       </span>
-                      <div className="w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeightPx}px` }} title={`Volume: ${formatUsd(row.volume)}`} />
+                      <div className="absolute left-0 w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeightPx}px`, bottom: `${zeroFromBottom}px` }} title={`Volume: ${formatUsd(row.volume)}`} />
                       <div
-                        className="absolute right-0 rounded-t bg-emerald-600"
+                        className={`absolute right-0 rounded-t ${row.pnl < 0 ? "bg-rose-600" : "bg-emerald-600"}`}
                         style={{
                           width: "calc(50% - 1px)",
                           height: `${pnlHeightPx}px`,
