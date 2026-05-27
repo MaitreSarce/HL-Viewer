@@ -138,7 +138,11 @@ const HistogramCard = ({
                 const heightPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
                 return (
                   <div key={`${title}-bar-${row.label}`} className="flex h-full min-w-8 flex-1 flex-col items-center justify-end gap-1">
-                    <div className="w-full rounded-t bg-slate-700" style={{ height: `${heightPct}%` }} />
+                    <div className="flex w-full flex-col items-center justify-end rounded-t bg-slate-700 px-0.5" style={{ height: `${heightPct}%` }}>
+                      <span className="pb-0.5 text-[9px] leading-none text-white" title={formatUsd(row.value)}>
+                        {formatUsd(row.value)}
+                      </span>
+                    </div>
                   </div>
                 );
               })}
@@ -197,8 +201,12 @@ const DualHistogramCard = ({
                 const pnlHeight = maxPnl > 0 ? Math.max(2, (Math.abs(row.pnl) / maxPnl) * 100) : 0;
                 return (
                   <div key={`${title}-pair-${row.label}`} className="flex h-full min-w-8 flex-1 items-end justify-center gap-0.5">
-                    <div className="w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeight}%` }} title={`Volume: ${formatUsd(row.volume)}`} />
-                    <div className="w-1/2 rounded-t bg-emerald-600" style={{ height: `${pnlHeight}%` }} title={`PNL: ${formatUsd(row.pnl)}`} />
+                    <div className="flex w-1/2 flex-col items-center justify-end rounded-t bg-sky-600 px-0.5" style={{ height: `${volumeHeight}%` }} title={`Volume: ${formatUsd(row.volume)}`}>
+                      <span className="pb-0.5 text-[9px] leading-none text-white">{formatUsd(row.volume)}</span>
+                    </div>
+                    <div className="flex w-1/2 flex-col items-center justify-end rounded-t bg-emerald-600 px-0.5" style={{ height: `${pnlHeight}%` }} title={`PNL: ${formatUsd(row.pnl)}`}>
+                      <span className="pb-0.5 text-[9px] leading-none text-white">{formatUsd(row.pnl)}</span>
+                    </div>
                   </div>
                 );
               })}
