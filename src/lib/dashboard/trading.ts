@@ -70,9 +70,20 @@ type PortfolioRange = {
   [key: string]: unknown;
 };
 type PortfolioResponse = Array<[string, PortfolioRange]>;
-type LedgerUpdate = {
+type DelegatorHistoryUpdate = {
   time?: number;
-  delta?: Record<string, unknown>;
+  delta?: {
+    delegate?: {
+      validator?: string;
+      amount?: string | number;
+      isUndelegate?: boolean;
+    };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+type DelegatorSummary = {
+  delegated?: string | number;
   [key: string]: unknown;
 };
 
@@ -362,51 +373,37 @@ const computeTwabFromHistory = (rows: PortfolioHistoryPoint[], endTimeMs: number
   return twab > 0 ? twab : null;
 };
 
-const isHypeLike = (tokenLike: string) => {
-  const t = tokenLike.trim().toUpperCase();
-  return t === "HYPE" || t === "WHYPE" || t === "STHYPE";
-};
-
-const parseStakeDelta = (delta: Record<string, unknown>): number => {
-  const typeUpper = readStringKeys(delta, ["type", "eventType", "action"]).toUpperCase();
-  const tokenUpper = readStringKeys(delta, ["token", "coin", "asset", "symbol"]).toUpperCase();
-  if (tokenUpper && !isHypeLike(tokenUpper)) return 0;
-
-  const amount = abs(toFiniteNumber(readStringKeys(delta, ["amount", "sz", "size", "qty", "delta", "value"])));
-  if (amount <= 0) return 0;
-
-  const looksStake =
-    typeUpper.includes("STAKE") ||
-    typeUpper.includes("DELEGATE") ||
-    typeUpper.includes("UNDELEGATE") ||
-    typeUpper.includes("UNSTAKE");
-  if (!looksStake) return 0;
-
-  if (typeUpper.includes("UNSTAKE") || typeUpper.includes("UNDELEGATE") || typeUpper.includes("WITHDRAW")) {
-    return -amount;
-  }
-  return amount;
-};
-
-const computeStakingTwabFromLedgerUpdates = (updates: LedgerUpdate[], endTimeMs: number): number | null => {
+const computeStakingTwabFromDelegatorHistory = (
+  updates: DelegatorHistoryUpdate[],
+  endTimeMs: number,
+  currentDelegated: number
+): number | null => {
   const events = updates
     .map((u) => {
       const t = Math.floor(toFiniteNumber(u.time ?? 0));
-      const delta = u.delta && typeof u.delta === "object" ? (u.delta as Record<string, unknown>) : null;
-      if (!delta || t <= 0) return null;
-      const stakeDelta = parseStakeDelta(delta);
-      if (!Number.isFinite(stakeDelta) || stakeDelta === 0) return null;
-      return { t, d: stakeDelta };
+      const delegate = u.delta?.delegate;
+      if (!delegate || t <= 0) return null;
+      const amount = abs(toFiniteNumber(delegate.amount ?? 0));
+      if (!Number.isFinite(amount) || amount <= 0) return null;
+      const isUndelegate = Boolean(delegate.isUndelegate);
+      return { t, d: isUndelegate ? -amount : amount };
     })
     .filter((e): e is { t: number; d: number } => e !== null)
     .sort((a, b) => a.t - b.t);
 
-  if (events.length === 0) return null;
+  if (events.length === 0) return currentDelegated > 0 ? currentDelegated : null;
 
-  let stake = 0;
+  // Rebuild backwards from current delegated balance to support multi-validator state exactly.
+  let stake = Math.max(0, currentDelegated);
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    stake = Math.max(0, stake - events[i].d);
+  }
+  const initialStake = stake;
+
   let area = 0;
   let start = events[0].t;
   let lastT = start;
+  stake = initialStake;
 
   for (const e of events) {
     if (e.t > lastT) {
@@ -906,17 +903,21 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
   }
 
   try {
-    stakingRequestUsed = 1;
-    const updates = await fetchHyperliquidInfo<LedgerUpdate[]>({ type: "userNonFundingLedgerUpdates", user: address });
-    const stakingTwab = computeStakingTwabFromLedgerUpdates(Array.isArray(updates) ? updates : [], endTime);
+    const [history, stakingSummary] = await Promise.all([
+      fetchHyperliquidInfo<DelegatorHistoryUpdate[]>({ type: "delegatorHistory", user: address }),
+      fetchHyperliquidInfo<DelegatorSummary>({ type: "delegatorSummary", user: address }),
+    ]);
+    stakingRequestUsed = 2;
+    const delegatedNow = abs(toFiniteNumber((stakingSummary as DelegatorSummary)?.delegated ?? 0));
+    const stakingTwab = computeStakingTwabFromDelegatorHistory(Array.isArray(history) ? history : [], endTime, delegatedNow);
     summary.totals.hypeStakingTwab = stakingTwab;
     if (stakingTwab !== null) {
-      warnings.push("HYPE staking TWAB is estimated from userNonFundingLedgerUpdates staking/delegation deltas.");
+      warnings.push("HYPE staking TWAB is computed from Hyperliquid staking-native delegatorHistory + delegatorSummary (multi-validator aware).");
     } else {
       warnings.push("HYPE staking TWAB unavailable (no staking ledger events detected).");
     }
   } catch {
-    warnings.push("Could not load non-funding ledger updates, so HYPE staking TWAB is unavailable.");
+    warnings.push("Could not load staking-native delegator history/summary, so HYPE staking TWAB is unavailable.");
   }
 
   summary.totals.spotTwab = spotTwab;
