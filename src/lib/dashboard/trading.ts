@@ -760,7 +760,12 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
     portfolioRequestUsed = 1;
     const portfolio = await fetchHyperliquidInfo<PortfolioResponse>({ type: "portfolio", user: address });
     const allTime = portfolio.find((row) => Array.isArray(row) && row[0] === "allTime")?.[1];
-    const officialSpotHistory = allTime?.spotState?.accountValueHistory ?? [];
+    // Prefer the canonical portfolio shape from Hyperliquid docs: allTime.accountValueHistory.
+    // Keep the older nested path as compatibility fallback.
+    const officialSpotHistory =
+      (allTime?.accountValueHistory as PortfolioHistoryPoint[] | undefined) ??
+      (allTime?.spotState?.accountValueHistory as PortfolioHistoryPoint[] | undefined) ??
+      [];
     const officialSpotPoints = historyToValuePoints(officialSpotHistory);
     const officialSpotTwab = computeTwabUsdFromValuePoints(officialSpotPoints, endTime / 1000);
     if (officialSpotTwab !== null) {

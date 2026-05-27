@@ -983,7 +983,7 @@ const buildBalanceEvents = (
 
 const buildHevmTwabValuePoints = (
   events: BalanceEvent[],
-  protocolInteractions: ProtocolInteraction[],
+  _protocolInteractions: ProtocolInteraction[],
   priceContext: HistoricalPriceContext,
   nowSec: number
 ): { points: TwabValuePoint[]; inferredAssetCount: number; unpricedAssetCount: number } => {
@@ -1013,19 +1013,9 @@ const buildHevmTwabValuePoints = (
   };
 
   let portfolioValueUsd = 0;
-  let lockedProtocolUsd = 0;
   let lastTimeSec = events[0].timeSec;
   let initialized = false;
-  let protocolCursor = 0;
   const points: TwabValuePoint[] = [];
-
-  const applyProtocolInteractionsUntil = (timeSec: number) => {
-    while (protocolCursor < protocolInteractions.length && protocolInteractions[protocolCursor].timeSec <= timeSec) {
-      lockedProtocolUsd += protocolInteractions[protocolCursor].deltaUsd;
-      if (lockedProtocolUsd < 0) lockedProtocolUsd = 0;
-      protocolCursor += 1;
-    }
-  };
 
   for (const event of events) {
     if (!initialized) {
@@ -1033,7 +1023,6 @@ const buildHevmTwabValuePoints = (
       initialized = true;
     }
 
-    applyProtocolInteractionsUntil(event.timeSec);
     for (const delta of event.deltas) {
       assetsByKey.set(delta.asset.key, delta.asset);
       const nextBalance = (balances.get(delta.asset.key) ?? 0) + delta.amount;
@@ -1044,7 +1033,7 @@ const buildHevmTwabValuePoints = (
       }
     }
 
-    portfolioValueUsd = computePortfolioValueUsd(event.timeSec) + lockedProtocolUsd;
+    portfolioValueUsd = computePortfolioValueUsd(event.timeSec);
     points.push({ timeSec: event.timeSec, valueUsd: portfolioValueUsd });
     lastTimeSec = event.timeSec;
   }
@@ -1275,7 +1264,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     "TWAB uses conservative pricing only (stablecoins, HYPE, and tokens with historical price series). Unpriced assets are excluded rather than inferred."
   );
   warnings.push(
-    "HEVM TWAB additionally tracks net USD locked in contract interactions (tx with calldata), so LP/lending deposits are counted even when no clear position token pricing is available."
+    "HEVM TWAB is computed from reconstructed transferable balances with conservative historical pricing; unpriced assets are excluded from valuation."
   );
   warnings.push("HEVM metrics are now computed from HyperEVM explorer account transactions (txlist/tokentx/internal).");
   warnings.push(
