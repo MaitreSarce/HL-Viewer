@@ -27,8 +27,10 @@ export type TradingSummary = {
     xyz: TradingBucket;
     perps: TradingBucket;
     spotVolume: number;
+    spotFeesPaid: number;
     spotTwab: number | null;
     unitVolume: number;
+    unitFeesPaid: number;
     totalVolume: number;
   };
   winrates: {
@@ -503,7 +505,9 @@ export const summarizeTradingFills = (
   const xyz = EMPTY_BUCKET();
   const perps = EMPTY_BUCKET();
   let spotVolume = 0;
+  let spotFeesPaid = 0;
   let unitVolume = 0;
+  let unitFeesPaid = 0;
   const outcomesSeries = emptyPnlSeriesMaps();
   const xyzSeries = emptyPnlSeriesMaps();
   const perpsSeries = emptyPnlSeriesMaps();
@@ -562,10 +566,13 @@ export const summarizeTradingFills = (
     }
 
     if (isSpotTrade(coinUpper, rawCoinUpper, classificationContext) && !outcomeFill) {
+      const feePaid = fillFeePaid(fill);
       spotVolume += volume;
+      spotFeesPaid += feePaid;
       addVolumePoint(spotSeries, volume);
       if (isUnitCoin(coinUpper)) {
         unitVolume += volume;
+        unitFeesPaid += feePaid;
         addVolumePoint(unitSeries, volume);
       }
     }
@@ -586,8 +593,10 @@ export const summarizeTradingFills = (
       xyz,
       perps,
       spotVolume,
+      spotFeesPaid,
       spotTwab,
       unitVolume,
+      unitFeesPaid,
       totalVolume,
     },
     winrates: {

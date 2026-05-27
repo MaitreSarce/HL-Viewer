@@ -11,8 +11,10 @@ type TradingData = {
     xyz: { volume: number; pnl: number; feesPaid: number };
     perps: { volume: number; pnl: number; feesPaid: number };
     spotVolume: number;
+    spotFeesPaid: number;
     spotTwab: number | null;
     unitVolume: number;
+    unitFeesPaid: number;
     totalVolume: number;
   };
   winrates: {
@@ -121,25 +123,99 @@ const HistogramCard = ({
   rows: Array<{ label: string; value: number }>;
 }) => {
   const max = rows.reduce((acc, row) => (Math.abs(row.value) > acc ? Math.abs(row.value) : acc), 0);
+  const maxItems = 24;
+  const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
   return (
     <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
-      {rows.length === 0 ? (
+      {displayedRows.length === 0 ? (
         <p className="text-xs text-slate-500">No data.</p>
       ) : (
         <div className="space-y-2">
-          {rows.map((row) => {
-            const widthPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
-            return (
-              <div key={`${title}-${row.label}`} className="grid grid-cols-[92px_1fr_96px] items-center gap-2">
-                <span className="truncate text-[11px] text-slate-600">{row.label}</span>
-                <div className="h-2 w-full rounded bg-slate-100">
-                  <div className="h-2 rounded bg-slate-700" style={{ width: `${widthPct}%` }} />
-                </div>
-                <span className="text-right text-[11px] text-slate-700">{formatUsd(row.value)}</span>
-              </div>
-            );
-          })}
+          <div className="h-40 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+            <div className="flex h-full items-end gap-1 overflow-x-auto">
+              {displayedRows.map((row) => {
+                const heightPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
+                return (
+                  <div key={`${title}-bar-${row.label}`} className="flex min-w-8 flex-1 flex-col items-center justify-end gap-1">
+                    <div className="w-full rounded-t bg-slate-700" style={{ height: `${heightPct}%` }} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="grid gap-1 text-[10px] text-slate-600" style={{ gridTemplateColumns: `repeat(${displayedRows.length}, minmax(0, 1fr))` }}>
+            {displayedRows.map((row) => (
+              <span key={`${title}-label-${row.label}`} className="truncate text-center" title={row.label}>
+                {row.label}
+              </span>
+            ))}
+          </div>
+          <div className="grid gap-1 text-[10px] text-slate-700" style={{ gridTemplateColumns: `repeat(${displayedRows.length}, minmax(0, 1fr))` }}>
+            {displayedRows.map((row) => (
+              <span key={`${title}-value-${row.label}`} className="truncate text-center" title={formatUsd(row.value)}>
+                {formatUsd(row.value)}
+              </span>
+            ))}
+          </div>
+          {rows.length > maxItems ? (
+            <p className="text-[10px] text-slate-500">Showing last {maxItems} periods.</p>
+          ) : null}
+        </div>
+      )}
+    </article>
+  );
+};
+
+const DualHistogramCard = ({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: Array<{ label: string; volume: number; pnl: number }>;
+}) => {
+  const maxItems = 24;
+  const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
+  const maxVolume = displayedRows.reduce((acc, row) => (Math.abs(row.volume) > acc ? Math.abs(row.volume) : acc), 0);
+  const maxPnl = displayedRows.reduce((acc, row) => (Math.abs(row.pnl) > acc ? Math.abs(row.pnl) : acc), 0);
+
+  return (
+    <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
+      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
+      {displayedRows.length === 0 ? (
+        <p className="text-xs text-slate-500">No data.</p>
+      ) : (
+        <div className="space-y-2">
+          <div className="mb-1 flex items-center justify-between text-[10px]">
+            <span className="font-medium text-sky-700">Y-left Volume {maxVolume > 0 ? `(max ${formatUsd(maxVolume)})` : ""}</span>
+            <span className="font-medium text-emerald-700">Y-right PNL {maxPnl > 0 ? `(max ${formatUsd(maxPnl)})` : ""}</span>
+          </div>
+          <div className="h-40 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+            <div className="flex h-full items-end gap-1 overflow-x-auto">
+              {displayedRows.map((row) => {
+                const volumeHeight = maxVolume > 0 ? Math.max(2, (Math.abs(row.volume) / maxVolume) * 100) : 0;
+                const pnlHeight = maxPnl > 0 ? Math.max(2, (Math.abs(row.pnl) / maxPnl) * 100) : 0;
+                return (
+                  <div key={`${title}-pair-${row.label}`} className="flex min-w-8 flex-1 items-end justify-center gap-0.5">
+                    <div className="w-1/2 rounded-t bg-sky-600" style={{ height: `${volumeHeight}%` }} title={`Volume: ${formatUsd(row.volume)}`} />
+                    <div className="w-1/2 rounded-t bg-emerald-600" style={{ height: `${pnlHeight}%` }} title={`PNL: ${formatUsd(row.pnl)}`} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="grid gap-1 text-[10px] text-slate-600" style={{ gridTemplateColumns: `repeat(${displayedRows.length}, minmax(0, 1fr))` }}>
+            {displayedRows.map((row) => (
+              <span key={`${title}-label-${row.label}`} className="truncate text-center" title={row.label}>
+                {row.label}
+              </span>
+            ))}
+          </div>
+          <div className="flex items-center gap-4 text-[10px]">
+            <span className="inline-flex items-center gap-1 text-sky-700"><span className="h-2 w-2 rounded bg-sky-600" />Volume</span>
+            <span className="inline-flex items-center gap-1 text-emerald-700"><span className="h-2 w-2 rounded bg-emerald-600" />PNL</span>
+          </div>
+          {rows.length > maxItems ? <p className="text-[10px] text-slate-500">Showing last {maxItems} periods.</p> : null}
         </div>
       )}
     </article>
@@ -350,6 +426,7 @@ export default function Home() {
                   title="Spot"
                   rows={[
                     { label: "Volume", value: formatUsd(trading.totals.spotVolume) },
+                    { label: "Fees paid", value: formatUsd(trading.totals.spotFeesPaid) },
                     {
                       label: "TWAB (USD)",
                       value: trading.totals.spotTwab === null ? "N/A" : formatUsd(trading.totals.spotTwab),
@@ -358,7 +435,10 @@ export default function Home() {
                 />
                 <ZoneCard
                   title="Unit"
-                  rows={[{ label: "Volume (BTC/ETH/PUMP/SOL)", value: formatUsd(trading.totals.unitVolume) }]}
+                  rows={[
+                    { label: "Volume (BTC/ETH/PUMP/SOL)", value: formatUsd(trading.totals.unitVolume) },
+                    { label: "Fees paid", value: formatUsd(trading.totals.unitFeesPaid) },
+                  ]}
                 />
                 <ZoneCard
                   title="Total"
@@ -369,29 +449,17 @@ export default function Home() {
                 />
               </div>
               <div className="grid gap-4 md:grid-cols-2">
-                <HistogramCard
-                  title={`Outcomes Volume (${histGranularity})`}
-                  rows={trading.charts.outcomes[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
+                <DualHistogramCard
+                  title={`Outcomes Volume + PNL (${histGranularity})`}
+                  rows={trading.charts.outcomes[histGranularity].map((row) => ({ label: row.period, volume: row.volume, pnl: row.pnl }))}
                 />
-                <HistogramCard
-                  title={`Outcomes PNL (${histGranularity})`}
-                  rows={trading.charts.outcomes[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
+                <DualHistogramCard
+                  title={`XYZ Volume + PNL (${histGranularity})`}
+                  rows={trading.charts.xyz[histGranularity].map((row) => ({ label: row.period, volume: row.volume, pnl: row.pnl }))}
                 />
-                <HistogramCard
-                  title={`XYZ Volume (${histGranularity})`}
-                  rows={trading.charts.xyz[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
-                />
-                <HistogramCard
-                  title={`XYZ PNL (${histGranularity})`}
-                  rows={trading.charts.xyz[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
-                />
-                <HistogramCard
-                  title={`Perps Volume (${histGranularity})`}
-                  rows={trading.charts.perps[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
-                />
-                <HistogramCard
-                  title={`Perps PNL (${histGranularity})`}
-                  rows={trading.charts.perps[histGranularity].map((row) => ({ label: row.period, value: row.pnl }))}
+                <DualHistogramCard
+                  title={`Perps Volume + PNL (${histGranularity})`}
+                  rows={trading.charts.perps[histGranularity].map((row) => ({ label: row.period, volume: row.volume, pnl: row.pnl }))}
                 />
                 <HistogramCard
                   title={`Spot Volume (${histGranularity})`}
