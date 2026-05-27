@@ -226,10 +226,6 @@ const DualHistogramCard = ({ title, rows }: { title: string; rows: Array<{ label
         : plotHeight;
   const pnlTopSpan = plotHeight - zeroFromBottom;
   const pnlBottomSpan = zeroFromBottom;
-  const pxPerUsdCandidates: number[] = [];
-  if (maxPnlPositive > 0) pxPerUsdCandidates.push(pnlTopSpan / maxPnlPositive);
-  if (pnlNegativeAbs > 0) pxPerUsdCandidates.push(pnlBottomSpan / pnlNegativeAbs);
-  const pxPerUsd = pxPerUsdCandidates.length > 0 ? Math.min(...pxPerUsdCandidates) : 0;
   const chartBody = (
     <div className="space-y-2">
       <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
@@ -254,7 +250,14 @@ const DualHistogramCard = ({ title, rows }: { title: string; rows: Array<{ label
                 </div>
                 {displayedRows.map((row) => {
                   const volumeHeightPx = maxVolume > 0 ? Math.max(2, (Math.abs(row.volume) / maxVolume) * Math.max(0, pnlTopSpan)) : 0;
-                  const pnlHeightPx = pxPerUsd > 0 ? Math.max(2, Math.abs(row.pnl) * pxPerUsd) : 0;
+                  const pnlHeightPx =
+                    row.pnl >= 0
+                      ? maxPnlPositive > 0
+                        ? (row.pnl / maxPnlPositive) * Math.max(0, pnlTopSpan)
+                        : 0
+                      : pnlNegativeAbs > 0
+                        ? (Math.abs(row.pnl) / pnlNegativeAbs) * Math.max(0, pnlBottomSpan)
+                        : 0;
                   const pnlLabelAnchorPx = row.pnl >= 0 ? zeroFromBottom + pnlHeightPx : zeroFromBottom;
                   const topPx = Math.max(volumeHeightPx, pnlLabelAnchorPx);
                   return (
