@@ -1,11 +1,9 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useMemo, useState } from "react";
-import { Fill, summarizeFills } from "@/lib/stats";
+import { FormEvent, useMemo, useState } from "react";
 
 type TradingData = {
-  source: "api" | "csv";
-  days: number;
+  source: "api";
   totals: {
     fills: number;
     outcomes: { volume: number; pnl: number };
@@ -53,7 +51,7 @@ type UnitBridgeData = {
     txCount: number;
   };
   meta: {
-    coverageMode: "auth-range" | "public-snapshot";
+    coverageMode: "auth-range" | "public-snapshot" | "cursor-paginated";
     warnings: string[];
   };
 };
@@ -73,69 +71,6 @@ const formatNum = (value: number) =>
   }).format(value);
 
 const formatPct = (value: number) => `${value.toFixed(2)}%`;
-
-const parseCsvLine = (line: string): string[] => {
-  const values: string[] = [];
-  let current = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-
-    if (char === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (char === "," && !inQuotes) {
-      values.push(current.trim());
-      current = "";
-      continue;
-    }
-
-    current += char;
-  }
-
-  values.push(current.trim());
-  return values;
-};
-
-const parseCsvFills = (csvText: string): Fill[] => {
-  const lines = csvText
-    .replace(/^\uFEFF/, "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length < 2) return [];
-
-  const headers = parseCsvLine(lines[0]).map((header) => header.toLowerCase());
-  const idxCoin = headers.indexOf("coin");
-  const idxDir = headers.indexOf("dir");
-  const idxPx = headers.indexOf("px");
-  const idxSz = headers.indexOf("sz");
-  const idxClosedPnl = headers.indexOf("closedpnl");
-
-  if (idxCoin < 0 || idxDir < 0 || idxPx < 0 || idxSz < 0 || idxClosedPnl < 0) {
-    throw new Error("CSV must include columns: coin, dir, px, sz, closedPnl.");
-  }
-
-  return lines.slice(1).map((line) => {
-    const cols = parseCsvLine(line);
-    return {
-      coin: cols[idxCoin],
-      dir: cols[idxDir],
-      px: cols[idxPx],
-      sz: cols[idxSz],
-      closedPnl: cols[idxClosedPnl],
-    } satisfies Fill;
-  });
-};
 
 const StatRow = ({ label, value }: { label: string; value: string }) => (
   <div className="flex items-center justify-between gap-4 text-sm">
@@ -163,10 +98,8 @@ const ZoneCard = ({
 
 export default function Home() {
   const [address, setAddress] = useState("");
-  const [days, setDays] = useState(30);
   const [activeTab, setActiveTab] = useState<TabKey>("trading");
   const [loadingApi, setLoadingApi] = useState(false);
-  const [loadingCsv, setLoadingCsv] = useState(false);
   const [error, setError] = useState("");
 
   const [trading, setTrading] = useState<TradingData | null>(null);
@@ -185,7 +118,6 @@ export default function Home() {
     try {
       const params = new URLSearchParams({
         address: address.trim(),
-        days: String(days),
       });
 
       const [tradingRes, hevmRes, unitRes] = await Promise.all([
@@ -217,7 +149,7 @@ export default function Home() {
       }
 
       if (failures.length > 0) {
-        setError(failures.join(" "));
+      setError(failures.join(" "));
       }
     } catch {
       setError("Unable to load dashboard data.");
@@ -225,38 +157,7 @@ export default function Home() {
       setLoadingApi(false);
     }
   };
-
-  const onCsvImport = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    setLoadingCsv(true);
-    setError("");
-
-    try {
-      const text = await file.text();
-      const fills = parseCsvFills(text);
-      const summary = summarizeFills(fills);
-
-      setTrading({
-        source: "csv",
-        days,
-        ...summary,
-        meta: {
-          warnings: ["CSV mode uses your exported file and can include your complete history."],
-        },
-      });
-      setActiveTab("trading");
-    } catch (err) {
-      setTrading(null);
-      setError(err instanceof Error ? err.message : "CSV import failed.");
-    } finally {
-      setLoadingCsv(false);
-      event.target.value = "";
-    }
-  };
-
-  const isLoading = loadingApi || loadingCsv;
+  const isLoading = loadingApi;
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-8 md:px-8">
@@ -267,7 +168,7 @@ export default function Home() {
 
       <form
         onSubmit={onAnalyzeApi}
-        className="grid gap-3 rounded-3xl border border-white/70 bg-white/80 p-5 shadow-sm lg:grid-cols-[2fr_1fr_1fr_1fr]"
+        className="grid gap-3 rounded-3xl border border-white/70 bg-white/80 p-5 shadow-sm lg:grid-cols-[3fr_1fr]"
       >
         <input
           className="rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-sky-300 focus:ring"
@@ -276,16 +177,6 @@ export default function Home() {
           onChange={(event) => setAddress(event.target.value)}
           required
         />
-        <label className="flex flex-col gap-1 text-sm text-slate-700">
-          Number of days
-          <input
-            type="number"
-            min={1}
-            className="rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-sky-300 focus:ring"
-            value={days}
-            onChange={(event) => setDays(Number(event.target.value))}
-          />
-        </label>
         <div className="flex flex-col gap-1">
           <button
             type="submit"
@@ -295,12 +186,7 @@ export default function Home() {
             {loadingApi ? "Loading API..." : "Analyze via API"}
           </button>
           <p className="text-[11px] text-amber-700">Warning: API trading stats count up to the most recent 10,000 fills.</p>
-          <p className="text-[11px] text-emerald-700">CSV import gives complete data coverage from your exported history.</p>
         </div>
-        <label className="flex cursor-pointer items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
-          {loadingCsv ? "Importing..." : "Import CSV"}
-          <input type="file" accept=".csv,text/csv" className="hidden" onChange={onCsvImport} />
-        </label>
       </form>
 
       <section className="rounded-2xl border border-white/60 bg-white/50 px-4 py-3 text-xs text-slate-500">
@@ -348,7 +234,7 @@ export default function Home() {
           {trading ? (
             <>
               <p className="text-sm text-slate-600">
-                Active source: {trading.source === "csv" ? "CSV (local file)" : "Hyperliquid API"}
+                Active source: Hyperliquid API
               </p>
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                 <ZoneCard
@@ -398,7 +284,7 @@ export default function Home() {
             </>
           ) : (
             <p className="rounded-2xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-600">
-              Start with API analysis or CSV import to view trading stats.
+              Start with API analysis to view trading stats.
             </p>
           )}
         </section>
@@ -465,7 +351,11 @@ export default function Home() {
                 />
               </div>
               <p className="text-xs text-slate-500">
-                Coverage mode: {unitBridge.meta.coverageMode === "auth-range" ? "Authenticated full range" : "Public snapshot"}
+                Coverage mode: {unitBridge.meta.coverageMode === "cursor-paginated"
+                  ? "Unit API cursor pagination (full history)"
+                  : unitBridge.meta.coverageMode === "auth-range"
+                    ? "Authenticated full range"
+                    : "Public snapshot"}
               </p>
               {unitWarnings.length > 0 ? (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
