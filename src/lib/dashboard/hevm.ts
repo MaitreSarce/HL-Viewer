@@ -38,6 +38,7 @@ type HevmComputed = {
   firstTxTime: number | null;
   charts: {
     volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
+    twab: Record<"day" | "week" | "month" | "year", Array<{ period: string; twab: number }>>;
   };
 };
 
@@ -310,6 +311,42 @@ const emptyVolumeSeriesMaps = () => ({
   month: new Map<string, number>(),
   year: new Map<string, number>(),
 });
+
+const emptyTwabSeriesMaps = () => ({
+  day: new Map<string, { area: number; duration: number }>(),
+  week: new Map<string, { area: number; duration: number }>(),
+  month: new Map<string, { area: number; duration: number }>(),
+  year: new Map<string, { area: number; duration: number }>(),
+});
+
+const nextPeriodStartMs = (timestampMs: number, granularity: "day" | "week" | "month" | "year"): number => {
+  const d = new Date(timestampMs);
+  if (Number.isNaN(d.getTime())) return timestampMs + 24 * 60 * 60 * 1000;
+  if (granularity === "day") {
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.getTime();
+  }
+  if (granularity === "week") {
+    const day = d.getUTCDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    d.setUTCDate(d.getUTCDate() + diff);
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() + 7);
+    return d.getTime();
+  }
+  if (granularity === "month") {
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(1);
+    d.setUTCMonth(d.getUTCMonth() + 1);
+    return d.getTime();
+  }
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(1);
+  d.setUTCMonth(0);
+  d.setUTCFullYear(d.getUTCFullYear() + 1);
+  return d.getTime();
+};
 
 const readResponseJson = async (response: Response): Promise<unknown> => {
   const text = await response.text();
@@ -1035,6 +1072,112 @@ const computeHevmTwabUsd = (
   };
 };
 
+const computeHevmTwabSeriesUsd = (
+  events: BalanceEvent[],
+  protocolInteractions: ProtocolInteraction[],
+  priceContext: HistoricalPriceContext,
+  nowSec: number
+): Record<"day" | "week" | "month" | "year", Array<{ period: string; twab: number }>> => {
+  if (events.length === 0) return { day: [], week: [], month: [], year: [] };
+
+  const balances = new Map<string, number>();
+  const assetsByKey = new Map<string, BalanceAsset>();
+  const fallbackPriceByAsset = new Map<string, number>();
+  const series = emptyTwabSeriesMaps();
+  let lockedProtocolUsd = 0;
+  let protocolCursor = 0;
+  let initialized = false;
+  let lastTimeSec = events[0].timeSec;
+  let portfolioValueUsd = 0;
+
+  const addWeighted = (
+    map: Map<string, { area: number; duration: number }>,
+    granularity: "day" | "week" | "month" | "year",
+    startSec: number,
+    endSec: number,
+    valueUsd: number
+  ) => {
+    if (endSec <= startSec) return;
+    let cursorMs = startSec * 1000;
+    const endMs = endSec * 1000;
+    while (cursorMs < endMs) {
+      const key = periodKeyByGranularity(cursorMs, granularity);
+      if (!key) break;
+      const boundary = nextPeriodStartMs(cursorMs, granularity);
+      const segEnd = Math.min(endMs, boundary);
+      const durationMs = Math.max(0, segEnd - cursorMs);
+      if (durationMs > 0) {
+        const prev = map.get(key) ?? { area: 0, duration: 0 };
+        prev.area += valueUsd * (durationMs / 1000);
+        prev.duration += durationMs / 1000;
+        map.set(key, prev);
+      }
+      cursorMs = segEnd;
+    }
+  };
+
+  const computePortfolioValueUsd = (timeSec: number): number => {
+    let valueUsd = 0;
+    for (const [assetKey, balance] of balances.entries()) {
+      if (balance <= 0) continue;
+      const asset = assetsByKey.get(assetKey);
+      if (!asset) continue;
+      const priceUsd = resolveAssetPriceUsd(asset, timeSec, priceContext, fallbackPriceByAsset);
+      if (priceUsd <= 0) continue;
+      valueUsd += balance * priceUsd;
+    }
+    return valueUsd;
+  };
+
+  const applyProtocolInteractionsUntil = (timeSec: number) => {
+    while (protocolCursor < protocolInteractions.length && protocolInteractions[protocolCursor].timeSec <= timeSec) {
+      lockedProtocolUsd += protocolInteractions[protocolCursor].deltaUsd;
+      if (lockedProtocolUsd < 0) lockedProtocolUsd = 0;
+      protocolCursor += 1;
+    }
+  };
+
+  for (const event of events) {
+    if (!initialized) {
+      initialized = true;
+      lastTimeSec = event.timeSec;
+    } else if (event.timeSec > lastTimeSec) {
+      for (const g of ["day", "week", "month", "year"] as const) {
+        addWeighted(series[g], g, lastTimeSec, event.timeSec, portfolioValueUsd);
+      }
+      lastTimeSec = event.timeSec;
+    }
+
+    applyProtocolInteractionsUntil(event.timeSec);
+    for (const delta of event.deltas) {
+      assetsByKey.set(delta.asset.key, delta.asset);
+      const nextBalance = (balances.get(delta.asset.key) ?? 0) + delta.amount;
+      if (nextBalance <= 1e-12) balances.delete(delta.asset.key);
+      else balances.set(delta.asset.key, nextBalance);
+    }
+    portfolioValueUsd = computePortfolioValueUsd(event.timeSec) + lockedProtocolUsd;
+  }
+
+  const endSec = Math.max(lastTimeSec, Math.floor(nowSec));
+  if (endSec > lastTimeSec) {
+    for (const g of ["day", "week", "month", "year"] as const) {
+      addWeighted(series[g], g, lastTimeSec, endSec, portfolioValueUsd);
+    }
+  }
+
+  const toSeries = (map: Map<string, { area: number; duration: number }>) =>
+    [...map.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([period, v]) => ({ period, twab: v.duration > 0 ? v.area / v.duration : 0 }));
+
+  return {
+    day: toSeries(series.day),
+    week: toSeries(series.week),
+    month: toSeries(series.month),
+    year: toSeries(series.year),
+  };
+};
+
 const buildProtocolInteractions = (
   target: string,
   normalTxs: AccountTx[],
@@ -1211,6 +1354,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     priceContext
   );
   const twabResult = computeHevmTwabUsd(balanceEvents, protocolInteractions, priceContext, endTime / 1000);
+  const hevmTwabSeries = computeHevmTwabSeriesUsd(balanceEvents, protocolInteractions, priceContext, endTime / 1000);
 
   let firstTxTimeSec: number | null = null;
   if (normalTxs.length > 0) {
@@ -1234,6 +1378,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     firstTxTime: firstTxTimeSec ? firstTxTimeSec * 1000 : null,
     charts: {
       volume: hevmVolumeSeries,
+      twab: hevmTwabSeries,
     },
   };
 

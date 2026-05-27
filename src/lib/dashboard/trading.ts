@@ -44,6 +44,7 @@ export type TradingSummary = {
     perps: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number; pnl: number }>>;
     spot: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
     unit: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
+    spotTwab: Record<"day" | "week" | "month" | "year", Array<{ period: string; twab: number }>>;
   };
 };
 
@@ -355,6 +356,119 @@ const computeTwabFromHistory = (rows: PortfolioHistoryPoint[], endTimeMs: number
   return twab > 0 ? twab : null;
 };
 
+const nextPeriodStartMs = (timestampMs: number, granularity: "day" | "week" | "month" | "year"): number => {
+  const d = new Date(timestampMs);
+  if (Number.isNaN(d.getTime())) return timestampMs + 24 * 60 * 60 * 1000;
+  if (granularity === "day") {
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.getTime();
+  }
+  if (granularity === "week") {
+    const day = d.getUTCDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    d.setUTCDate(d.getUTCDate() + diff);
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() + 7);
+    return d.getTime();
+  }
+  if (granularity === "month") {
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(1);
+    d.setUTCMonth(d.getUTCMonth() + 1);
+    return d.getTime();
+  }
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(1);
+  d.setUTCMonth(0);
+  d.setUTCFullYear(d.getUTCFullYear() + 1);
+  return d.getTime();
+};
+
+const computeTwabSeriesFromHistory = (
+  rows: PortfolioHistoryPoint[],
+  endTimeMs: number
+): Record<"day" | "week" | "month" | "year", Array<{ period: string; twab: number }>> => {
+  const points = rows
+    .map((row) => {
+      if (!Array.isArray(row) || row.length < 2) return null;
+      const t = Math.floor(toFiniteNumber(row[0]));
+      const v = toFiniteNumber(row[1]);
+      if (t <= 0 || !Number.isFinite(v)) return null;
+      return { t, v };
+    })
+    .filter((row): row is { t: number; v: number } => row !== null)
+    .sort((a, b) => a.t - b.t);
+
+  const empty = { day: [], week: [], month: [], year: [] } as Record<
+    "day" | "week" | "month" | "year",
+    Array<{ period: string; twab: number }>
+  >;
+  if (points.length === 0) return empty;
+
+  const addWeighted = (
+    map: Map<string, { area: number; duration: number }>,
+    granularity: "day" | "week" | "month" | "year",
+    startMs: number,
+    endMs: number,
+    value: number
+  ) => {
+    if (endMs <= startMs) return;
+    let cursor = startMs;
+    while (cursor < endMs) {
+      const key = periodKeyByGranularity(cursor, granularity);
+      if (!key) break;
+      const boundary = nextPeriodStartMs(cursor, granularity);
+      const segmentEnd = Math.min(endMs, boundary);
+      const duration = Math.max(0, segmentEnd - cursor);
+      if (duration > 0) {
+        const prev = map.get(key) ?? { area: 0, duration: 0 };
+        prev.area += value * duration;
+        prev.duration += duration;
+        map.set(key, prev);
+      }
+      cursor = segmentEnd;
+    }
+  };
+
+  const seriesMaps = {
+    day: new Map<string, { area: number; duration: number }>(),
+    week: new Map<string, { area: number; duration: number }>(),
+    month: new Map<string, { area: number; duration: number }>(),
+    year: new Map<string, { area: number; duration: number }>(),
+  };
+
+  let lastT = points[0].t;
+  let lastV = points[0].v;
+  for (let i = 1; i < points.length; i += 1) {
+    const p = points[i];
+    if (p.t <= lastT) continue;
+    for (const g of ["day", "week", "month", "year"] as const) {
+      addWeighted(seriesMaps[g], g, lastT, p.t, lastV);
+    }
+    lastT = p.t;
+    lastV = p.v;
+  }
+  const end = Math.max(lastT, Math.floor(endTimeMs));
+  if (end > lastT) {
+    for (const g of ["day", "week", "month", "year"] as const) {
+      addWeighted(seriesMaps[g], g, lastT, end, lastV);
+    }
+  }
+
+  const toSeries = (map: Map<string, { area: number; duration: number }>) =>
+    [...map.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([period, v]) => ({ period, twab: v.duration > 0 ? v.area / v.duration : 0 }));
+
+  return {
+    day: toSeries(seriesMaps.day),
+    week: toSeries(seriesMaps.week),
+    month: toSeries(seriesMaps.month),
+    year: toSeries(seriesMaps.year),
+  };
+};
+
 const parseSpotPair = (coinUpper: string): { base: string; quote: string } | null => {
   const raw = coinUpper.trim().toUpperCase();
   if (!raw) return null;
@@ -635,6 +749,12 @@ export const summarizeTradingFills = (
         month: [...unitSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
         year: [...unitSeries.year.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
       },
+      spotTwab: {
+        day: [],
+        week: [],
+        month: [],
+        year: [],
+      },
     },
   };
 };
@@ -708,6 +828,7 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
     const officialSpotTwab = computeTwabFromHistory(officialSpotHistory, endTime);
     if (officialSpotTwab !== null) {
       spotTwab = officialSpotTwab;
+      summary.charts.spotTwab = computeTwabSeriesFromHistory(officialSpotHistory, endTime);
       warnings.push("Spot TWAB now uses Hyperliquid portfolio spotState.accountValueHistory (official source).");
     }
   } catch {

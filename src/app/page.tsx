@@ -31,6 +31,7 @@ type TradingData = {
     perps: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number; pnl: number }>>;
     spot: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
     unit: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
+    spotTwab: Record<"day" | "week" | "month" | "year", Array<{ period: string; twab: number }>>;
   };
 };
 
@@ -47,6 +48,7 @@ type HevmData = {
     txCount: number;
     charts: {
       volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
+      twab: Record<"day" | "week" | "month" | "year", Array<{ period: string; twab: number }>>;
     };
   };
   meta: {
@@ -634,6 +636,10 @@ export default function Home() {
                   title={`Unit Asset Volume (${histGranularity})`}
                   rows={trading.charts.unit[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
                 />
+                <HistogramCard
+                  title={`Spot TWAB (${histGranularity})`}
+                  rows={trading.charts.spotTwab[histGranularity].map((row) => ({ label: row.period, value: row.twab }))}
+                />
               </div>
               {tradingWarnings.length > 0 ? (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
@@ -678,6 +684,10 @@ export default function Home() {
                 <HistogramCard
                   title={`HEVM Volume (${histGranularity})`}
                   rows={hevm.stats.charts.volume[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
+                />
+                <HistogramCard
+                  title={`HEVM TWAB (${histGranularity})`}
+                  rows={hevm.stats.charts.twab[histGranularity].map((row) => ({ label: row.period, value: row.twab }))}
                 />
               </div>
               {hevmWarnings.length > 0 ? (
