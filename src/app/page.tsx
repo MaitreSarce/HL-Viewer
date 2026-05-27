@@ -3,10 +3,9 @@
 import { ChangeEvent, FormEvent, useMemo, useState } from "react";
 import { Fill, summarizeFills } from "@/lib/stats";
 
-type StatsResponse = {
-  error?: string;
+type TradingData = {
+  source: "api" | "csv";
   days: number;
-  source?: "api" | "csv";
   totals: {
     fills: number;
     outcomes: { volume: number; pnl: number };
@@ -21,14 +20,61 @@ type StatsResponse = {
     xyz: number;
     perps: number;
   };
+  meta?: {
+    warnings?: string[];
+  };
 };
 
-const formatUsd = (v: number) =>
-  new Intl.NumberFormat("fr-FR", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(v);
+type HevmData = {
+  stats: {
+    twab: number | null;
+    volume: number;
+    contractsCount: number;
+    activeDays: number;
+    activeMonths: number;
+    sinceFirstTx: { days: number; months: number; years: number };
+    bridgeVolume: number;
+    txCount: number;
+  };
+  meta: {
+    warnings: string[];
+  };
+};
 
-const formatPct = (v: number) => `${v.toFixed(2)}%`;
+type UnitBridgeData = {
+  stats: {
+    volume: number;
+    contractsCount: number;
+    activeDays: number;
+    activeMonths: number;
+    sourceChainsCount: number;
+    destinationChainsCount: number;
+    sinceFirstTx: { days: number; months: number; years: number };
+    txCount: number;
+  };
+  meta: {
+    coverageMode: "auth-range" | "public-snapshot";
+    warnings: string[];
+  };
+};
 
-const parseCsvLine = (line: string) => {
+type TabKey = "trading" | "hevm" | "unit";
+
+const formatUsd = (value: number) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(value);
+
+const formatNum = (value: number) =>
+  new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 2,
+  }).format(value);
+
+const formatPct = (value: number) => `${value.toFixed(2)}%`;
+
+const parseCsvLine = (line: string): string[] => {
   const values: string[] = [];
   let current = "";
   let inQuotes = false;
@@ -68,7 +114,7 @@ const parseCsvFills = (csvText: string): Fill[] => {
 
   if (lines.length < 2) return [];
 
-  const headers = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
+  const headers = parseCsvLine(lines[0]).map((header) => header.toLowerCase());
   const idxCoin = headers.indexOf("coin");
   const idxDir = headers.indexOf("dir");
   const idxPx = headers.indexOf("px");
@@ -76,7 +122,7 @@ const parseCsvFills = (csvText: string): Fill[] => {
   const idxClosedPnl = headers.indexOf("closedpnl");
 
   if (idxCoin < 0 || idxDir < 0 || idxPx < 0 || idxSz < 0 || idxClosedPnl < 0) {
-    throw new Error("Le CSV doit contenir les colonnes: coin, dir, px, sz, closedPnl.");
+    throw new Error("CSV must include columns: coin, dir, px, sz, closedPnl.");
   }
 
   return lines.slice(1).map((line) => {
@@ -91,51 +137,92 @@ const parseCsvFills = (csvText: string): Fill[] => {
   });
 };
 
+const StatRow = ({ label, value }: { label: string; value: string }) => (
+  <div className="flex items-center justify-between gap-4 text-sm">
+    <span className="text-slate-600">{label}</span>
+    <span className="font-semibold text-slate-900">{value}</span>
+  </div>
+);
+
+const ZoneCard = ({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: Array<{ label: string; value: string }>;
+}) => (
+  <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
+    <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
+    <div className="space-y-2">
+      {rows.map((row) => (
+        <StatRow key={`${title}-${row.label}`} label={row.label} value={row.value} />
+      ))}
+    </div>
+  </article>
+);
+
 export default function Home() {
   const [address, setAddress] = useState("");
-  const [days, setDays] = useState(14);
-  const [loading, setLoading] = useState(false);
+  const [days, setDays] = useState(30);
+  const [activeTab, setActiveTab] = useState<TabKey>("trading");
+  const [loadingApi, setLoadingApi] = useState(false);
+  const [loadingCsv, setLoadingCsv] = useState(false);
   const [error, setError] = useState("");
-  const [data, setData] = useState<StatsResponse | null>(null);
 
-  const cards = useMemo(() => {
-    if (!data) return [];
-    return [
-      { label: "Volume outcomes", value: formatUsd(data.totals.outcomes.volume) },
-      { label: "PVL outcomes", value: formatUsd(data.totals.outcomes.pnl) },
-      { label: "Volume XYZ", value: formatUsd(data.totals.xyz.volume) },
-      { label: "PVL XYZ", value: formatUsd(data.totals.xyz.pnl) },
-      { label: "Volume spot", value: formatUsd(data.totals.spotVolume) },
-      { label: "Volume Unit (BTC/ETH/PUMP/SOL)", value: formatUsd(data.totals.unitVolume) },
-      { label: "Volume perps", value: formatUsd(data.totals.perps.volume) },
-      { label: "PVL perps", value: formatUsd(data.totals.perps.pnl) },
-      { label: "Volume total (perps + spot + outcomes)", value: formatUsd(data.totals.totalVolume) },
-      { label: "Winrate outcomes", value: formatPct(data.winrates.outcomes) },
-      { label: "Winrate XYZ", value: formatPct(data.winrates.xyz) },
-      { label: "Winrate perps", value: formatPct(data.winrates.perps) },
-    ];
-  }, [data]);
+  const [trading, setTrading] = useState<TradingData | null>(null);
+  const [hevm, setHevm] = useState<HevmData | null>(null);
+  const [unitBridge, setUnitBridge] = useState<UnitBridgeData | null>(null);
 
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
+  const tradingWarnings = useMemo(() => trading?.meta?.warnings ?? [], [trading]);
+  const hevmWarnings = useMemo(() => hevm?.meta?.warnings ?? [], [hevm]);
+  const unitWarnings = useMemo(() => unitBridge?.meta?.warnings ?? [], [unitBridge]);
+
+  const onAnalyzeApi = async (event: FormEvent) => {
+    event.preventDefault();
+    setLoadingApi(true);
     setError("");
 
     try {
-      const params = new URLSearchParams({ address: address.trim(), days: String(days) });
-      const res = await fetch(`/api/hyperliquid-stats?${params.toString()}`);
-      const json = (await res.json()) as StatsResponse;
-      if (!res.ok) {
-        setData(null);
-        setError(json.error ?? "Erreur API.");
+      const params = new URLSearchParams({
+        address: address.trim(),
+        days: String(days),
+      });
+
+      const [tradingRes, hevmRes, unitRes] = await Promise.all([
+        fetch(`/api/dashboard/trading?${params.toString()}`),
+        fetch(`/api/dashboard/hevm?address=${encodeURIComponent(address.trim())}`),
+        fetch(`/api/dashboard/unit-bridge?address=${encodeURIComponent(address.trim())}`),
+      ]);
+
+      const [tradingJson, hevmJson, unitJson] = await Promise.all([tradingRes.json(), hevmRes.json(), unitRes.json()]);
+
+      const failures: string[] = [];
+
+      if (tradingRes.ok) {
+        setTrading(tradingJson as TradingData);
       } else {
-        setData(json);
+        failures.push((tradingJson as { error?: string }).error ?? "Trading API failed.");
+      }
+
+      if (hevmRes.ok) {
+        setHevm(hevmJson as HevmData);
+      } else {
+        failures.push((hevmJson as { error?: string }).error ?? "HEVM API failed.");
+      }
+
+      if (unitRes.ok) {
+        setUnitBridge(unitJson as UnitBridgeData);
+      } else {
+        failures.push((unitJson as { error?: string }).error ?? "Unit bridge API failed.");
+      }
+
+      if (failures.length > 0) {
+        setError(failures.join(" "));
       }
     } catch {
-      setData(null);
-      setError("Impossible de charger les statistiques.");
+      setError("Unable to load dashboard data.");
     } finally {
-      setLoading(false);
+      setLoadingApi(false);
     }
   };
 
@@ -143,35 +230,50 @@ export default function Home() {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    setLoading(true);
+    setLoadingCsv(true);
     setError("");
 
     try {
       const text = await file.text();
       const fills = parseCsvFills(text);
       const summary = summarizeFills(fills);
-      setData({ days, source: "csv", ...summary });
-    } catch (e) {
-      setData(null);
-      setError(e instanceof Error ? e.message : "Import CSV impossible.");
+
+      setTrading({
+        source: "csv",
+        days,
+        ...summary,
+        meta: {
+          warnings: ["CSV mode uses your exported file and can include your complete history."],
+        },
+      });
+      setActiveTab("trading");
+    } catch (err) {
+      setTrading(null);
+      setError(err instanceof Error ? err.message : "CSV import failed.");
     } finally {
-      setLoading(false);
+      setLoadingCsv(false);
       event.target.value = "";
     }
   };
 
+  const isLoading = loadingApi || loadingCsv;
+
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 px-4 py-8 md:px-8">
-      <header className="rounded-3xl border border-white/70 bg-white/75 p-6 shadow-sm backdrop-blur">
-        <h1 className="text-2xl font-semibold">Hyperliquid Portfolio Viewer</h1>
+    <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-8 md:px-8">
+      <header className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-sm backdrop-blur">
+        <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Portfolio Analytics</p>
+        <h1 className="mt-2 text-2xl font-semibold text-slate-900">Hyperliquid Viewer</h1>
       </header>
 
-      <form onSubmit={onSubmit} className="grid gap-3 rounded-3xl border border-white/70 bg-white/75 p-5 shadow-sm md:grid-cols-4">
+      <form
+        onSubmit={onAnalyzeApi}
+        className="grid gap-3 rounded-3xl border border-white/70 bg-white/80 p-5 shadow-sm lg:grid-cols-[2fr_1fr_1fr_1fr]"
+      >
         <input
           className="rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-sky-300 focus:ring"
-          placeholder="Adresse wallet 0x..."
+          placeholder="EVM wallet address 0x..."
           value={address}
-          onChange={(e) => setAddress(e.target.value)}
+          onChange={(event) => setAddress(event.target.value)}
           required
         />
         <label className="flex flex-col gap-1 text-sm text-slate-700">
@@ -181,22 +283,22 @@ export default function Home() {
             min={1}
             className="rounded-xl border border-slate-200 bg-white px-3 py-2 outline-none ring-sky-300 focus:ring"
             value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
+            onChange={(event) => setDays(Number(event.target.value))}
           />
         </label>
         <div className="flex flex-col gap-1">
           <button
             type="submit"
-            disabled={loading}
+            disabled={isLoading}
             className="rounded-xl bg-slate-900 px-4 py-2 font-medium text-white transition hover:bg-slate-700 disabled:opacity-60"
           >
-            {loading ? "Chargement..." : "Analyser via API"}
+            {loadingApi ? "Loading API..." : "Analyze via API"}
           </button>
-          <p className="text-[11px] text-amber-700">Warning: API stats are limited to the most recent 2,000 fills per request.</p>
-          <p className="text-[11px] text-emerald-700">CSV import uses your full exported history for complete stats.</p>
+          <p className="text-[11px] text-amber-700">Warning: API trading stats count up to the most recent 10,000 fills.</p>
+          <p className="text-[11px] text-emerald-700">CSV import gives complete data coverage from your exported history.</p>
         </div>
         <label className="flex cursor-pointer items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
-          Import CSV
+          {loadingCsv ? "Importing..." : "Import CSV"}
           <input type="file" accept=".csv,text/csv" className="hidden" onChange={onCsvImport} />
         </label>
       </form>
@@ -218,20 +320,167 @@ export default function Home() {
         <p>BTC address : bc1qlknx6s5xpahym2t5jj2tt50x62rp4trt5qurz7</p>
       </section>
 
+      <nav className="flex flex-wrap gap-2">
+        {[
+          { id: "trading", label: "Trading" },
+          { id: "hevm", label: "HEVM" },
+          { id: "unit", label: "Unit Bridge" },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id as TabKey)}
+            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+              activeTab === tab.id
+                ? "bg-slate-900 text-white"
+                : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+
       {error ? <p className="rounded-xl bg-red-50 px-4 py-3 text-red-700">{error}</p> : null}
 
-      {data ? (
-        <>
-          <p className="text-sm text-slate-600">Source active: {data.source === "csv" ? "CSV local" : "API Hyperliquid"}</p>
-          <section className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            {cards.map((c) => (
-              <article key={c.label} className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm">
-                <p className="text-sm text-slate-500">{c.label}</p>
-                <p className="mt-2 text-xl font-semibold">{c.value}</p>
-              </article>
-            ))}
-          </section>
-        </>
+      {activeTab === "trading" ? (
+        <section className="space-y-4">
+          {trading ? (
+            <>
+              <p className="text-sm text-slate-600">
+                Active source: {trading.source === "csv" ? "CSV (local file)" : "Hyperliquid API"}
+              </p>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                <ZoneCard
+                  title="Outcomes"
+                  rows={[
+                    { label: "Volume", value: formatUsd(trading.totals.outcomes.volume) },
+                    { label: "PVL", value: formatUsd(trading.totals.outcomes.pnl) },
+                    { label: "Winrate", value: formatPct(trading.winrates.outcomes) },
+                  ]}
+                />
+                <ZoneCard
+                  title="XYZ"
+                  rows={[
+                    { label: "Volume", value: formatUsd(trading.totals.xyz.volume) },
+                    { label: "PVL", value: formatUsd(trading.totals.xyz.pnl) },
+                    { label: "Winrate", value: formatPct(trading.winrates.xyz) },
+                  ]}
+                />
+                <ZoneCard
+                  title="Perps"
+                  rows={[
+                    { label: "Volume", value: formatUsd(trading.totals.perps.volume) },
+                    { label: "PVL", value: formatUsd(trading.totals.perps.pnl) },
+                    { label: "Winrate", value: formatPct(trading.winrates.perps) },
+                  ]}
+                />
+                <ZoneCard title="Spot" rows={[{ label: "Volume", value: formatUsd(trading.totals.spotVolume) }]} />
+                <ZoneCard
+                  title="Unit"
+                  rows={[{ label: "Volume (BTC/ETH/PUMP/SOL)", value: formatUsd(trading.totals.unitVolume) }]}
+                />
+                <ZoneCard
+                  title="Total"
+                  rows={[
+                    { label: "Volume total (perps + spot + outcomes)", value: formatUsd(trading.totals.totalVolume) },
+                    { label: "Fills counted", value: formatNum(trading.totals.fills) },
+                  ]}
+                />
+              </div>
+              {tradingWarnings.length > 0 ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                  {tradingWarnings.map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <p className="rounded-2xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-600">
+              Start with API analysis or CSV import to view trading stats.
+            </p>
+          )}
+        </section>
+      ) : null}
+
+      {activeTab === "hevm" ? (
+        <section className="space-y-4">
+          {hevm ? (
+            <>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                <ZoneCard
+                  title="HEVM Activity"
+                  rows={[
+                    { label: "TWAB", value: hevm.stats.twab === null ? "N/A" : formatNum(hevm.stats.twab) },
+                    { label: "Volume", value: formatUsd(hevm.stats.volume) },
+                    { label: "Different contracts", value: formatNum(hevm.stats.contractsCount) },
+                    { label: "Different active days", value: formatNum(hevm.stats.activeDays) },
+                    { label: "Different active months", value: formatNum(hevm.stats.activeMonths) },
+                    {
+                      label: "Since first tx",
+                      value: `${hevm.stats.sinceFirstTx.days}d / ${hevm.stats.sinceFirstTx.months}m / ${hevm.stats.sinceFirstTx.years}y`,
+                    },
+                    { label: "Bridge volume", value: formatUsd(hevm.stats.bridgeVolume) },
+                    { label: "Number of tx", value: formatNum(hevm.stats.txCount) },
+                  ]}
+                />
+              </div>
+              {hevmWarnings.length > 0 ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                  {hevmWarnings.map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <p className="rounded-2xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-600">
+              Run API analysis to load HEVM stats.
+            </p>
+          )}
+        </section>
+      ) : null}
+
+      {activeTab === "unit" ? (
+        <section className="space-y-4">
+          {unitBridge ? (
+            <>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                <ZoneCard
+                  title="Unit Bridge"
+                  rows={[
+                    { label: "Volume", value: formatUsd(unitBridge.stats.volume) },
+                    { label: "Different contracts", value: formatNum(unitBridge.stats.contractsCount) },
+                    { label: "Different active days", value: formatNum(unitBridge.stats.activeDays) },
+                    { label: "Different active months", value: formatNum(unitBridge.stats.activeMonths) },
+                    { label: "Source chains", value: formatNum(unitBridge.stats.sourceChainsCount) },
+                    { label: "Destination chains", value: formatNum(unitBridge.stats.destinationChainsCount) },
+                    {
+                      label: "Since first tx",
+                      value: `${unitBridge.stats.sinceFirstTx.days}d / ${unitBridge.stats.sinceFirstTx.months}m / ${unitBridge.stats.sinceFirstTx.years}y`,
+                    },
+                    { label: "Number of tx", value: formatNum(unitBridge.stats.txCount) },
+                  ]}
+                />
+              </div>
+              <p className="text-xs text-slate-500">
+                Coverage mode: {unitBridge.meta.coverageMode === "auth-range" ? "Authenticated full range" : "Public snapshot"}
+              </p>
+              {unitWarnings.length > 0 ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                  {unitWarnings.map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <p className="rounded-2xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-600">
+              Run API analysis to load Unit bridge stats.
+            </p>
+          )}
+        </section>
       ) : null}
     </div>
   );
