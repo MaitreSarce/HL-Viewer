@@ -820,13 +820,18 @@ const computeUnitTwabUsd = (
   };
 
   let firstTimeMs = events[0].timeMs;
-  if (typeof anchorStartTimeMs === "number" && Number.isFinite(anchorStartTimeMs) && anchorStartTimeMs > 0) {
-    firstTimeMs = Math.min(firstTimeMs, Math.floor(anchorStartTimeMs));
+  const hasAnchorStart =
+    typeof anchorStartTimeMs === "number" &&
+    Number.isFinite(anchorStartTimeMs) &&
+    anchorStartTimeMs > 0 &&
+    Math.floor(anchorStartTimeMs) < firstTimeMs;
+  if (hasAnchorStart) {
+    firstTimeMs = Math.floor(anchorStartTimeMs as number);
   }
   let lastTimeMs = firstTimeMs;
   let runningValue = 0;
   let weightedArea = 0;
-  let initialized = false;
+  let initialized = hasAnchorStart;
 
   for (const event of events) {
     if (!initialized) {
