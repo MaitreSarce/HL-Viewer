@@ -1,13 +1,26 @@
 import { ageFromTimestamp, normalizeAddress, readStringKeys, toFiniteNumber, utcDayKey, utcMonthKey } from "@/lib/dashboard/shared";
 
-const HYPURRSCAN_BASE_URL = "https://api.hypurrscan.io";
+const UNIT_API_BASE_URL = "https://api.hyperunit.xyz";
+const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
+const MAX_PAGINATION_PAGES = 500;
+const EXCLUDED_ASSETS = new Set(["ena"]);
 
-type HypurrActionRecord = {
-  time?: number;
-  user?: string;
-  action?: Record<string, unknown>;
-  hash?: string;
+type UnitOperationRecord = {
+  operationId?: string;
+  sourceChain?: string;
+  destinationChain?: string;
+  sourceAddress?: string;
+  destinationAddress?: string;
+  asset?: string;
+  sourceAmount?: string | number;
+  opCreatedAt?: string;
+  state?: string;
   [key: string]: unknown;
+};
+
+type UnitOperationsPage = {
+  operations?: unknown;
+  cursor?: unknown;
 };
 
 type UnitBridgeStats = {
@@ -33,9 +46,33 @@ export type UnitBridgeApiResult = {
   stats: UnitBridgeStats;
   meta: {
     requestsUsed: number;
-    coverageMode: "auth-range" | "public-snapshot";
+    pagesFetched: number;
+    operationsFetched: number;
+    truncated: boolean;
+    coverageMode: "cursor-paginated";
     warnings: string[];
   };
+};
+
+type UnitAssetMeta = {
+  decimals: number;
+  priceSymbols: string[];
+};
+
+const UNIT_ASSET_META: Record<string, UnitAssetMeta> = {
+  btc: { decimals: 8, priceSymbols: ["BTC"] },
+  eth: { decimals: 18, priceSymbols: ["ETH"] },
+  sol: { decimals: 9, priceSymbols: ["SOL"] },
+  xpl: { decimals: 18, priceSymbols: ["XPL"] },
+  mon: { decimals: 18, priceSymbols: ["MON"] },
+  zec: { decimals: 8, priceSymbols: ["ZEC"] },
+  avax: { decimals: 18, priceSymbols: ["AVAX"] },
+  pump: { decimals: 6, priceSymbols: ["PUMP"] },
+  fart: { decimals: 6, priceSymbols: ["FARTCOIN", "FART"] },
+  bonk: { decimals: 5, priceSymbols: ["kBONK", "BONK"] },
+  spxs: { decimals: 8, priceSymbols: ["SPX", "SPXS"] },
+  "2z": { decimals: 6, priceSymbols: ["2Z"] },
+  virtual: { decimals: 18, priceSymbols: ["VIRTUAL"] },
 };
 
 const parseJson = async (response: Response): Promise<unknown> => {
@@ -48,106 +85,156 @@ const parseJson = async (response: Response): Promise<unknown> => {
   }
 };
 
-const fetchHypurr = async (path: string, jwt?: string): Promise<unknown> => {
-  const headers: HeadersInit = jwt ? { Authorization: `Bearer ${jwt}` } : {};
-  const response = await fetch(`${HYPURRSCAN_BASE_URL}${path}`, {
+const toBigIntSafe = (value: unknown): bigint => {
+  try {
+    if (typeof value === "bigint") return value;
+    if (typeof value === "number" && Number.isFinite(value)) return BigInt(Math.trunc(value));
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) return BigInt(0);
+      if (trimmed.includes(".")) {
+        const [whole] = trimmed.split(".");
+        return whole ? BigInt(whole) : BigInt(0);
+      }
+      return BigInt(trimmed);
+    }
+  } catch {
+    return BigInt(0);
+  }
+  return BigInt(0);
+};
+
+const toDecimalNumber = (value: bigint, decimals: number): number => {
+  const safeDecimals = Math.max(0, Math.floor(decimals));
+  if (safeDecimals === 0) return Number(value);
+
+  const negative = value < BigInt(0);
+  let raw = (negative ? -value : value).toString();
+  if (raw.length <= safeDecimals) raw = raw.padStart(safeDecimals + 1, "0");
+
+  const split = raw.length - safeDecimals;
+  const whole = raw.slice(0, split);
+  const fractional = raw.slice(split, split + 12).replace(/0+$/, "");
+  const text = fractional ? `${whole}.${fractional}` : whole;
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed)) return 0;
+  return negative ? -parsed : parsed;
+};
+
+const parseOperationTime = (operation: UnitOperationRecord): number => {
+  const raw = typeof operation.opCreatedAt === "string" ? operation.opCreatedAt : "";
+  if (!raw.trim()) return 0;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) && ms > 0 ? ms : 0;
+};
+
+const normalizeAsset = (asset: unknown): string => {
+  if (typeof asset !== "string") return "";
+  return asset.trim().toLowerCase();
+};
+
+const assetMeta = (asset: string): UnitAssetMeta => {
+  const known = UNIT_ASSET_META[asset];
+  if (known) return known;
+  return { decimals: 18, priceSymbols: [asset.toUpperCase()] };
+};
+
+const toTokenAmount = (operation: UnitOperationRecord): number => {
+  const asset = normalizeAsset(operation.asset);
+  const decimals = assetMeta(asset).decimals;
+  const raw = operation.sourceAmount;
+
+  if (typeof raw === "string" && raw.includes(".")) {
+    const direct = toFiniteNumber(raw);
+    return direct > 0 ? direct : 0;
+  }
+
+  const amount = toDecimalNumber(toBigIntSafe(raw), decimals);
+  return amount > 0 ? amount : 0;
+};
+
+const asUnitOperations = (payload: unknown): UnitOperationRecord[] => {
+  if (!Array.isArray(payload)) return [];
+  return payload.filter((row) => row && typeof row === "object") as UnitOperationRecord[];
+};
+
+const fetchUnitOperationsPage = async (address: string, cursor?: string): Promise<UnitOperationsPage> => {
+  const url = new URL(`/operations/${address}`, UNIT_API_BASE_URL);
+  if (cursor) url.searchParams.set("cursor", cursor);
+
+  const response = await fetch(url.toString(), {
     method: "GET",
-    headers,
     cache: "no-store",
   });
+
   const payload = await parseJson(response);
   if (!response.ok) {
-    const reason =
-      payload && typeof payload === "object" && "detail" in (payload as Record<string, unknown>)
-        ? String((payload as Record<string, unknown>).detail)
-        : `Hypurrscan request failed (${response.status})`;
-    throw new Error(reason);
+    const message =
+      payload && typeof payload === "object"
+        ? readStringKeys(payload as Record<string, unknown>, ["error", "detail", "message"]).trim()
+        : "";
+    throw new Error(message || `Unit operations request failed (${response.status})`);
   }
-  return payload;
+
+  if (!payload || typeof payload !== "object") return {};
+  return payload as UnitOperationsPage;
 };
 
-const toTokenSymbol = (action: Record<string, unknown>): string => {
-  const token = readStringKeys(action, ["token", "coin", "asset"]).toUpperCase().trim();
-  if (!token) return "";
-  return token.split(":")[0];
+const fetchAllMids = async (): Promise<Record<string, number>> => {
+  const response = await fetch(HYPERLIQUID_INFO_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type: "allMids" }),
+    cache: "no-store",
+  });
+
+  const payload = await parseJson(response);
+  if (!response.ok || !payload || typeof payload !== "object") {
+    throw new Error(`allMids request failed (${response.status})`);
+  }
+
+  const mids: Record<string, number> = {};
+  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+    const price = toFiniteNumber(value);
+    if (price > 0) mids[key] = price;
+  }
+  return mids;
 };
 
-const isUnitToken = (symbol: string): boolean => {
-  if (!symbol) return false;
-  if (symbol === "USDC" || symbol === "USDT0" || symbol.startsWith("USD")) return false;
-  if (symbol.startsWith("U")) return true;
-  return symbol === "BTC" || symbol === "ETH" || symbol === "SOL" || symbol === "PUMP";
-};
-
-const isUnitBridgeAction = (action: Record<string, unknown>): boolean => {
-  const type = readStringKeys(action, ["type"]).toLowerCase();
-  const token = toTokenSymbol(action);
-
-  if (!isUnitToken(token)) return false;
-
-  return (
-    type === "sendasset" ||
-    type === "spotsend" ||
-    type === "systemspotsendaction" ||
-    type === "systemsendassetaction" ||
-    type === "subaccountspottransfer"
-  );
-};
-
-const actionVolume = (action: Record<string, unknown>): number => {
-  const usdcValue = toFiniteNumber(action.usdcValue);
-  if (usdcValue !== 0) return Math.abs(usdcValue);
-
-  const amount = toFiniteNumber(action.amount);
-  if (amount !== 0) return Math.abs(amount);
-
-  const usdRaw = toFiniteNumber(action.usd);
-  if (usdRaw !== 0) return Math.abs(usdRaw / 1_000_000);
-
+const resolveAssetPrice = (asset: string, mids: Record<string, number>): number => {
+  const meta = assetMeta(asset);
+  for (const symbol of meta.priceSymbols) {
+    const price = mids[symbol];
+    if (Number.isFinite(price) && price > 0) return price;
+  }
   return 0;
 };
 
-const actionTime = (record: HypurrActionRecord): number => {
-  const time = toFiniteNumber(record.time);
-  return time > 0 ? Math.floor(time) : 0;
-};
-
-const actionParticipants = (record: HypurrActionRecord): string[] => {
-  const action = record.action ?? {};
-  const values = [
-    readStringKeys(record as Record<string, unknown>, ["user"]),
-    readStringKeys(action, ["user"]),
-    readStringKeys(action, ["destination"]),
-    readStringKeys(action, ["subAccountUser"]),
-  ];
-  return values.map((x) => normalizeAddress(x)).filter(Boolean);
-};
-
-const sourceChain = (action: Record<string, unknown>): string => {
-  const candidate = readStringKeys(action, ["signatureChainId", "sourceChain", "fromChain", "chainId"]).trim();
-  if (!candidate) return "";
-  return candidate.toLowerCase();
-};
-
-const destinationChain = (action: Record<string, unknown>): string => {
-  const candidate = readStringKeys(action, ["hyperliquidChain", "destinationChain", "toChain"]).trim();
-  if (!candidate) return "";
-  return candidate.toLowerCase();
-};
-
-const dedupe = (records: HypurrActionRecord[]) => {
-  const keyed = new Map<string, HypurrActionRecord>();
-  records.forEach((record, index) => {
-    const hash = typeof record.hash === "string" ? record.hash : "";
-    const time = actionTime(record);
-    const key = hash ? `${hash}:${time}` : `${time}:${index}`;
-    keyed.set(key, record);
+const dedupeOperations = (operations: UnitOperationRecord[]): UnitOperationRecord[] => {
+  const keyed = new Map<string, UnitOperationRecord>();
+  operations.forEach((operation, index) => {
+    const id = readStringKeys(operation as Record<string, unknown>, ["operationId", "sourceTxHash"]).trim();
+    const key =
+      id ||
+      [
+        readStringKeys(operation as Record<string, unknown>, ["sourceAddress"]),
+        readStringKeys(operation as Record<string, unknown>, ["destinationAddress"]),
+        normalizeAsset(operation.asset),
+        String(operation.sourceAmount ?? ""),
+        String(parseOperationTime(operation)),
+        String(index),
+      ].join("|");
+    keyed.set(key, operation);
   });
-  return [...keyed.values()].sort((a, b) => actionTime(a) - actionTime(b));
+  return [...keyed.values()].sort((a, b) => parseOperationTime(a) - parseOperationTime(b));
 };
 
-const computeUnitBridgeStats = (records: HypurrActionRecord[]): UnitBridgeStats => {
-  if (records.length === 0) {
+const computeUnitBridgeStats = (
+  operations: UnitOperationRecord[],
+  mids: Record<string, number>,
+  warnings: string[]
+): UnitBridgeStats => {
+  if (operations.length === 0) {
     return {
       volume: 0,
       contractsCount: 0,
@@ -161,118 +248,130 @@ const computeUnitBridgeStats = (records: HypurrActionRecord[]): UnitBridgeStats 
     };
   }
 
-  let firstTx = Number.MAX_SAFE_INTEGER;
-  let volume = 0;
   const contracts = new Set<string>();
   const days = new Set<string>();
   const months = new Set<string>();
   const sourceChains = new Set<string>();
   const destinationChains = new Set<string>();
+  const missingPriceAssets = new Set<string>();
 
-  for (const record of records) {
-    const time = actionTime(record);
+  let firstTxTime = Number.MAX_SAFE_INTEGER;
+  let volumeUsd = 0;
+
+  for (const operation of operations) {
+    const asset = normalizeAsset(operation.asset);
+    if (!asset || EXCLUDED_ASSETS.has(asset)) continue;
+
+    contracts.add(asset.toUpperCase());
+
+    const time = parseOperationTime(operation);
     if (time > 0) {
-      firstTx = Math.min(firstTx, time);
+      firstTxTime = Math.min(firstTxTime, time);
       const dayKey = utcDayKey(time);
       const monthKey = utcMonthKey(time);
       if (dayKey) days.add(dayKey);
       if (monthKey) months.add(monthKey);
     }
 
-    const action = record.action ?? {};
-    const token = toTokenSymbol(action);
-    if (token) contracts.add(token);
-    volume += actionVolume(action);
+    const sourceChain = readStringKeys(operation as Record<string, unknown>, ["sourceChain"]).trim().toLowerCase();
+    const destinationChain = readStringKeys(operation as Record<string, unknown>, ["destinationChain"]).trim().toLowerCase();
+    if (sourceChain) sourceChains.add(sourceChain);
+    if (destinationChain) destinationChains.add(destinationChain);
 
-    const src = sourceChain(action);
-    const dst = destinationChain(action);
-    if (src) sourceChains.add(src);
-    if (dst) destinationChains.add(dst);
+    const amount = toTokenAmount(operation);
+    if (amount <= 0) continue;
+    const price = resolveAssetPrice(asset, mids);
+    if (price <= 0) {
+      missingPriceAssets.add(asset.toUpperCase());
+      continue;
+    }
+    volumeUsd += amount * price;
   }
 
-  const firstTxTime = Number.isFinite(firstTx) ? firstTx : null;
+  if (missingPriceAssets.size > 0) {
+    warnings.push(
+      `Missing Hyperliquid mid-price for: ${[...missingPriceAssets].sort().join(", ")}. These amounts were excluded from USD volume.`
+    );
+  }
 
+  const first = Number.isFinite(firstTxTime) ? firstTxTime : null;
   return {
-    volume,
+    volume: volumeUsd,
     contractsCount: contracts.size,
     activeDays: days.size,
     activeMonths: months.size,
     sourceChainsCount: sourceChains.size,
     destinationChainsCount: destinationChains.size,
-    sinceFirstTx: firstTxTime ? ageFromTimestamp(firstTxTime) : { days: 0, months: 0, years: 0 },
-    txCount: records.length,
-    firstTxTime,
+    sinceFirstTx: first ? ageFromTimestamp(first) : { days: 0, months: 0, years: 0 },
+    txCount: operations.filter((operation) => !EXCLUDED_ASSETS.has(normalizeAsset(operation.asset))).length,
+    firstTxTime: first,
   };
-};
-
-const asRecords = (payload: unknown): HypurrActionRecord[] => {
-  if (!Array.isArray(payload)) return [];
-  return payload.filter((row) => row && typeof row === "object") as HypurrActionRecord[];
 };
 
 export const fetchUnitBridgeStats = async (address: string): Promise<UnitBridgeApiResult> => {
   const endTime = Date.now();
   const startTime = 0;
-  const jwt = process.env.HYPURRSCAN_JWT?.trim();
   const warnings: string[] = [];
-
   let requestsUsed = 0;
-  let coverageMode: "auth-range" | "public-snapshot" = "public-snapshot";
-  let allRecords: HypurrActionRecord[] = [];
+  let pagesFetched = 0;
+  let truncated = false;
 
-  if (jwt) {
-    try {
-      const fromTs = Math.floor(startTime / 1000);
-      const toTs = Math.floor(endTime / 1000);
-      const [transfers, bridges] = await Promise.all([
-        fetchHypurr(`/transfers/${fromTs}/${toTs}`, jwt),
-        fetchHypurr(`/bridges/${fromTs}/${toTs}`, jwt),
-      ]);
-      requestsUsed += 2;
-      allRecords = dedupe([...asRecords(transfers), ...asRecords(bridges)]);
-      coverageMode = "auth-range";
-    } catch (error) {
-      warnings.push(
-        error instanceof Error
-          ? `Authenticated Hypurrscan mode failed (${error.message}). Falling back to public snapshots.`
-          : "Authenticated Hypurrscan mode failed. Falling back to public snapshots."
-      );
+  const allOperations: UnitOperationRecord[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+
+  for (let page = 0; page < MAX_PAGINATION_PAGES; page += 1) {
+    const payload = await fetchUnitOperationsPage(address, cursor);
+    requestsUsed += 1;
+    pagesFetched += 1;
+
+    const pageOperations = asUnitOperations(payload.operations);
+    allOperations.push(...pageOperations);
+
+    const nextCursorRaw = readStringKeys(payload as Record<string, unknown>, ["cursor"]).trim();
+    if (!nextCursorRaw) break;
+    if (seenCursors.has(nextCursorRaw)) {
+      truncated = true;
+      warnings.push("Unit pagination cursor repeated unexpectedly; stopped early to avoid an infinite loop.");
+      break;
     }
+    seenCursors.add(nextCursorRaw);
+    cursor = nextCursorRaw;
   }
 
-  if (allRecords.length === 0) {
-    const [recentTransfers, recentBridges] = await Promise.all([
-      fetchHypurr("/aLotOfTransfers"),
-      fetchHypurr("/bridges"),
-    ]);
-    requestsUsed += 2;
-    allRecords = dedupe([...asRecords(recentTransfers), ...asRecords(recentBridges)]);
-    coverageMode = "public-snapshot";
+  if (cursor && pagesFetched >= MAX_PAGINATION_PAGES) {
+    truncated = true;
+    warnings.push(`Stopped after ${MAX_PAGINATION_PAGES} pages while more Unit history was available.`);
+  }
+
+  let mids: Record<string, number> = {};
+  try {
+    mids = await fetchAllMids();
+    requestsUsed += 1;
+  } catch (error) {
     warnings.push(
-      "Public Hypurrscan mode is limited to recent snapshots (around 20k transfers + 500 bridges globally)."
+      error instanceof Error
+        ? `Could not fetch Hyperliquid mid-prices (${error.message}); Unit USD volume may be understated.`
+        : "Could not fetch Hyperliquid mid-prices; Unit USD volume may be understated."
     );
   }
 
-  warnings.push("Unit bridge volume is estimated from action amount/usdcValue fields when available.");
+  const dedupedOperations = dedupeOperations(allOperations);
+  const stats = computeUnitBridgeStats(dedupedOperations, mids, warnings);
 
-  const target = normalizeAddress(address);
-  const relevant = allRecords.filter((record) => {
-    const participants = actionParticipants(record);
-    if (!participants.includes(target)) return false;
-    const action = record.action ?? {};
-    return isUnitBridgeAction(action);
-  });
-
-  const stats = computeUnitBridgeStats(relevant);
+  warnings.push("Unit bridge volume is estimated in USD from source amounts and current Hyperliquid mid-prices.");
 
   return {
     source: "api",
-    address,
+    address: normalizeAddress(address),
     period: { startTime, endTime },
     stats,
     meta: {
       requestsUsed,
-      coverageMode,
+      pagesFetched,
+      operationsFetched: dedupedOperations.length,
+      truncated,
+      coverageMode: "cursor-paginated",
       warnings,
     },
   };
