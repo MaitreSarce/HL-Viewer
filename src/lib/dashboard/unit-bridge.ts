@@ -38,7 +38,7 @@ type UnitBridgeStats = {
   txCount: number;
   firstTxTime: number | null;
   charts: {
-    volume: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+    volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
   };
 };
 
@@ -141,10 +141,13 @@ const utcWeekKey = (timestampMs: number): string => {
   return d.toISOString().slice(0, 10);
 };
 
-const periodKeyByGranularity = (timestampMs: number, granularity: "day" | "week" | "month") => {
+const periodKeyByGranularity = (timestampMs: number, granularity: "day" | "week" | "month" | "year") => {
   if (granularity === "day") return utcDayKey(timestampMs);
   if (granularity === "week") return utcWeekKey(timestampMs);
-  return utcMonthKey(timestampMs);
+  if (granularity === "month") return utcMonthKey(timestampMs);
+  const d = new Date(timestampMs);
+  if (Number.isNaN(d.getTime())) return "";
+  return String(d.getUTCFullYear());
 };
 
 const normalizeAsset = (asset: unknown): string => {
@@ -265,7 +268,7 @@ const computeUnitBridgeStats = (
       txCount: 0,
       firstTxTime: null,
       charts: {
-        volume: { day: [], week: [], month: [] },
+        volume: { day: [], week: [], month: [], year: [] },
       },
     };
   }
@@ -280,6 +283,7 @@ const computeUnitBridgeStats = (
     day: new Map<string, number>(),
     week: new Map<string, number>(),
     month: new Map<string, number>(),
+    year: new Map<string, number>(),
   };
 
   let firstTxTime = Number.MAX_SAFE_INTEGER;
@@ -315,7 +319,7 @@ const computeUnitBridgeStats = (
     const contribution = amount * price;
     volumeUsd += contribution;
     if (time > 0) {
-      for (const granularity of ["day", "week", "month"] as const) {
+      for (const granularity of ["day", "week", "month", "year"] as const) {
         const key = periodKeyByGranularity(time, granularity);
         if (!key) continue;
         volumeSeries[granularity].set(key, (volumeSeries[granularity].get(key) ?? 0) + contribution);
@@ -345,6 +349,7 @@ const computeUnitBridgeStats = (
         day: [...volumeSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
         week: [...volumeSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
         month: [...volumeSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+        year: [...volumeSeries.year.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
       },
     },
   };

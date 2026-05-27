@@ -37,11 +37,11 @@ export type TradingSummary = {
     perps: number;
   };
   charts: {
-    outcomes: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
-    xyz: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
-    perps: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
-    spot: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
-    unit: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+    outcomes: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number; pnl: number }>>;
+    xyz: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number; pnl: number }>>;
+    perps: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number; pnl: number }>>;
+    spot: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
+    unit: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
   };
 };
 
@@ -295,22 +295,31 @@ const utcWeekKey = (timestampMs: number): string => {
   return d.toISOString().slice(0, 10);
 };
 
-const periodKeyByGranularity = (timestampMs: number, granularity: "day" | "week" | "month") => {
+const utcYearKey = (timestampMs: number): string => {
+  const d = new Date(timestampMs);
+  if (Number.isNaN(d.getTime())) return "";
+  return String(d.getUTCFullYear());
+};
+
+const periodKeyByGranularity = (timestampMs: number, granularity: "day" | "week" | "month" | "year") => {
   if (granularity === "day") return utcDayKey(timestampMs);
   if (granularity === "week") return utcWeekKey(timestampMs);
-  return utcMonthKey(timestampMs);
+  if (granularity === "month") return utcMonthKey(timestampMs);
+  return utcYearKey(timestampMs);
 };
 
 const emptyPnlSeriesMaps = () => ({
   day: new Map<string, { volume: number; pnl: number }>(),
   week: new Map<string, { volume: number; pnl: number }>(),
   month: new Map<string, { volume: number; pnl: number }>(),
+  year: new Map<string, { volume: number; pnl: number }>(),
 });
 
 const emptyVolumeSeriesMaps = () => ({
   day: new Map<string, number>(),
   week: new Map<string, number>(),
   month: new Map<string, number>(),
+  year: new Map<string, number>(),
 });
 
 const computeTwabFromHistory = (rows: PortfolioHistoryPoint[], endTimeMs: number): number | null => {
@@ -523,7 +532,7 @@ export const summarizeTradingFills = (
       pointPnl: number
     ) => {
       if (timeMs <= 0) return;
-      for (const granularity of ["day", "week", "month"] as const) {
+      for (const granularity of ["day", "week", "month", "year"] as const) {
         const key = periodKeyByGranularity(timeMs, granularity);
         if (!key) continue;
         const prev = target[granularity].get(key) ?? { volume: 0, pnl: 0 };
@@ -535,7 +544,7 @@ export const summarizeTradingFills = (
     };
     const addVolumePoint = (target: ReturnType<typeof emptyVolumeSeriesMaps>, pointVolume: number) => {
       if (timeMs <= 0) return;
-      for (const granularity of ["day", "week", "month"] as const) {
+      for (const granularity of ["day", "week", "month", "year"] as const) {
         const key = periodKeyByGranularity(timeMs, granularity);
         if (!key) continue;
         target[granularity].set(key, (target[granularity].get(key) ?? 0) + pointVolume);
@@ -591,26 +600,31 @@ export const summarizeTradingFills = (
         day: [...outcomesSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
         week: [...outcomesSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
         month: [...outcomesSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+        year: [...outcomesSeries.year.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
       },
       xyz: {
         day: [...xyzSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
         week: [...xyzSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
         month: [...xyzSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+        year: [...xyzSeries.year.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
       },
       perps: {
         day: [...perpsSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
         week: [...perpsSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
         month: [...perpsSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
+        year: [...perpsSeries.year.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, v]) => ({ period, volume: v.volume, pnl: v.pnl })),
       },
       spot: {
         day: [...spotSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
         week: [...spotSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
         month: [...spotSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+        year: [...spotSeries.year.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
       },
       unit: {
         day: [...unitSeries.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
         week: [...unitSeries.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
         month: [...unitSeries.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+        year: [...unitSeries.year.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
       },
     },
   };

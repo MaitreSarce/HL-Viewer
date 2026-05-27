@@ -24,11 +24,11 @@ type TradingData = {
     warnings?: string[];
   };
   charts: {
-    outcomes: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
-    xyz: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
-    perps: Record<"day" | "week" | "month", Array<{ period: string; volume: number; pnl: number }>>;
-    spot: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
-    unit: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+    outcomes: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number; pnl: number }>>;
+    xyz: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number; pnl: number }>>;
+    perps: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number; pnl: number }>>;
+    spot: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
+    unit: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
   };
 };
 
@@ -44,7 +44,7 @@ type HevmData = {
     bridgeVolume: number;
     txCount: number;
     charts: {
-      volume: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+      volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
     };
   };
   meta: {
@@ -63,7 +63,7 @@ type UnitBridgeData = {
     sinceFirstTx: { days: number; months: number; years: number };
     txCount: number;
     charts: {
-      volume: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+      volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
     };
   };
   meta: {
@@ -73,7 +73,7 @@ type UnitBridgeData = {
 };
 
 type TabKey = "trading" | "hevm" | "unit";
-type HistogramGranularity = "day" | "week" | "month";
+type HistogramGranularity = "day" | "week" | "month" | "year";
 
 const formatUsd = (value: number) =>
   new Intl.NumberFormat("en-US", {
@@ -131,14 +131,12 @@ const HistogramCard = ({
           {rows.map((row) => {
             const widthPct = max > 0 ? Math.max(2, (Math.abs(row.value) / max) * 100) : 0;
             return (
-              <div key={`${title}-${row.label}`} className="space-y-1">
-                <div className="flex items-center justify-between text-[11px] text-slate-600">
-                  <span>{row.label}</span>
-                  <span>{formatUsd(row.value)}</span>
-                </div>
+              <div key={`${title}-${row.label}`} className="grid grid-cols-[92px_1fr_96px] items-center gap-2">
+                <span className="truncate text-[11px] text-slate-600">{row.label}</span>
                 <div className="h-2 w-full rounded bg-slate-100">
                   <div className="h-2 rounded bg-slate-700" style={{ width: `${widthPct}%` }} />
                 </div>
+                <span className="text-right text-[11px] text-slate-700">{formatUsd(row.value)}</span>
               </div>
             );
           })}
@@ -296,6 +294,7 @@ export default function Home() {
           { id: "day", label: "Day" },
           { id: "week", label: "Week" },
           { id: "month", label: "Month" },
+          { id: "year", label: "Year" },
         ] as const).map((option) => (
           <button
             key={option.id}

@@ -37,7 +37,7 @@ type HevmComputed = {
   txCount: number;
   firstTxTime: number | null;
   charts: {
-    volume: Record<"day" | "week" | "month", Array<{ period: string; volume: number }>>;
+    volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
   };
 };
 
@@ -291,16 +291,24 @@ const utcWeekKey = (timestampMs: number): string => {
   return date.toISOString().slice(0, 10);
 };
 
-const periodKeyByGranularity = (timestampMs: number, granularity: "day" | "week" | "month") => {
+const utcYearKey = (timestampMs: number): string => {
+  const date = new Date(timestampMs);
+  if (Number.isNaN(date.getTime())) return "";
+  return String(date.getUTCFullYear());
+};
+
+const periodKeyByGranularity = (timestampMs: number, granularity: "day" | "week" | "month" | "year") => {
   if (granularity === "day") return utcDayKey(timestampMs);
   if (granularity === "week") return utcWeekKey(timestampMs);
-  return utcMonthKey(timestampMs);
+  if (granularity === "month") return utcMonthKey(timestampMs);
+  return utcYearKey(timestampMs);
 };
 
 const emptyVolumeSeriesMaps = () => ({
   day: new Map<string, number>(),
   week: new Map<string, number>(),
   month: new Map<string, number>(),
+  year: new Map<string, number>(),
 });
 
 const readResponseJson = async (response: Response): Promise<unknown> => {
@@ -740,7 +748,7 @@ const computeHevmVolumeSeries = (
   const addPoint = (timeSec: number, usdValue: number) => {
     if (!Number.isFinite(usdValue) || usdValue <= 0) return;
     const timeMs = timeSec * 1000;
-    for (const granularity of ["day", "week", "month"] as const) {
+    for (const granularity of ["day", "week", "month", "year"] as const) {
       const key = periodKeyByGranularity(timeMs, granularity);
       if (!key) continue;
       series[granularity].set(key, (series[granularity].get(key) ?? 0) + usdValue);
@@ -775,6 +783,7 @@ const computeHevmVolumeSeries = (
     day: [...series.day.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
     week: [...series.week.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
     month: [...series.month.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
+    year: [...series.year.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([period, volume]) => ({ period, volume })),
   };
 };
 
