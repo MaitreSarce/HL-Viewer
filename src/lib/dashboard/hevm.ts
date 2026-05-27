@@ -8,14 +8,16 @@ import {
 } from "@/lib/dashboard/shared";
 
 const HYPERSCAN_API_URL = "https://www.hyperscan.com/api";
-const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
 const HYPEREVM_RPC_URL = "https://rpc.hyperliquid.xyz/evm";
-const DEXSCREENER_TOKEN_API_URL = "https://api.dexscreener.com/tokens/v1/hyperevm";
+const COINGECKO_API_URL = "https://api.coingecko.com/api/v3";
+const COINGECKO_HYPE_COIN_ID = "hyperliquid";
+const COINGECKO_HYPEREVM_PLATFORM_ID = "hyperevm";
 const HYPEREVM_CHAIN_ID = 999;
 const ACCOUNT_OFFSET = 5000;
 const TOKEN_OFFSET = 1000;
 const INTERNAL_OFFSET = 1000;
-const DEXSCREENER_BATCH_SIZE = 30;
+const COINGECKO_MAX_CONTRACT_SERIES = 24;
+const COINGECKO_REQUEST_DELAY_MS = 300;
 const SYSTEM_BRIDGE_ADDRESS = "0x2222222222222222222222222222222222222222";
 
 type HevmComputed = {
@@ -75,6 +77,19 @@ type TokenTx = {
   value: number;
   symbol: string;
   contractAddress: string;
+};
+
+type PricePoint = {
+  timeMs: number;
+  priceUsd: number;
+};
+
+type HistoricalPriceContext = {
+  nativeSeries: PricePoint[];
+  tokenSeriesByContract: Map<string, PricePoint[]>;
+  requestsUsed: number;
+  unavailableContracts: Set<string>;
+  skippedContracts: Set<string>;
 };
 
 const NO_TX_MESSAGES = new Set([
@@ -205,15 +220,6 @@ const isHypeLikeSymbol = (symbol: string) => {
   return upper === "HYPE" || upper === "WHYPE" || upper === "KHYPE" || upper === "STHYPE";
 };
 
-const chunk = <T>(values: T[], size: number): T[][] => {
-  if (size <= 0) return [values];
-  const parts: T[][] = [];
-  for (let i = 0; i < values.length; i += size) {
-    parts.push(values.slice(i, i + size));
-  }
-  return parts;
-};
-
 const utcWeekKey = (timestampMs: number): string => {
   const date = new Date(timestampMs);
   if (Number.isNaN(date.getTime())) return "";
@@ -252,21 +258,103 @@ const fetchLatestBlockNumber = async (): Promise<number> => {
   }
 };
 
-const fetchHypePriceUsd = async (): Promise<number> => {
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, Math.max(0, Math.floor(ms)));
+  });
+
+const normalizePriceSeries = (payload: unknown): PricePoint[] => {
+  if (!isObjectRecord(payload) || !Array.isArray(payload.prices)) return [];
+
+  const points: PricePoint[] = [];
+  for (const item of payload.prices) {
+    if (!Array.isArray(item) || item.length < 2) continue;
+    const timeMs = Math.floor(toFiniteNumber(item[0]));
+    const priceUsd = toFiniteNumber(item[1]);
+    if (timeMs <= 0 || priceUsd <= 0) continue;
+    points.push({ timeMs, priceUsd });
+  }
+
+  points.sort((a, b) => a.timeMs - b.timeMs);
+  return points;
+};
+
+const fetchCoinGeckoCoinPriceSeries = async (
+  coinId: string,
+  fromSec: number,
+  toSec: number
+): Promise<PricePoint[]> => {
   try {
-    const response = await fetch(HYPERLIQUID_INFO_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "allMids" }),
+    const params = new URLSearchParams({
+      vs_currency: "usd",
+      from: String(Math.max(0, Math.floor(fromSec))),
+      to: String(Math.max(0, Math.floor(toSec))),
+    });
+    const response = await fetch(`${COINGECKO_API_URL}/coins/${coinId}/market_chart/range?${params.toString()}`, {
+      method: "GET",
       cache: "no-store",
     });
     const payload = await readResponseJson(response);
-    if (!response.ok || !isObjectRecord(payload)) return 0;
-    const value = toFiniteNumber(payload.HYPE);
-    return value > 0 ? value : 0;
+    if (!response.ok) return [];
+    return normalizePriceSeries(payload);
   } catch {
-    return 0;
+    return [];
   }
+};
+
+const fetchCoinGeckoContractPriceSeries = async (
+  contractAddress: string,
+  fromSec: number,
+  toSec: number
+): Promise<PricePoint[]> => {
+  try {
+    const params = new URLSearchParams({
+      vs_currency: "usd",
+      from: String(Math.max(0, Math.floor(fromSec))),
+      to: String(Math.max(0, Math.floor(toSec))),
+    });
+    const normalizedContract = normalizeAddress(contractAddress);
+    const response = await fetch(
+      `${COINGECKO_API_URL}/coins/${COINGECKO_HYPEREVM_PLATFORM_ID}/contract/${normalizedContract}/market_chart/range?${params.toString()}`,
+      {
+        method: "GET",
+        cache: "no-store",
+      }
+    );
+    const payload = await readResponseJson(response);
+    if (!response.ok) return [];
+    return normalizePriceSeries(payload);
+  } catch {
+    return [];
+  }
+};
+
+const priceAtTimeSec = (series: PricePoint[], timeSec: number): number => {
+  if (series.length === 0) return 0;
+  const targetMs = Math.max(0, Math.floor(timeSec * 1000));
+
+  if (targetMs <= series[0].timeMs) return series[0].priceUsd;
+  if (targetMs >= series[series.length - 1].timeMs) return series[series.length - 1].priceUsd;
+
+  let left = 0;
+  let right = series.length - 1;
+  while (left <= right) {
+    const mid = Math.floor((left + right) / 2);
+    const midTime = series[mid].timeMs;
+    if (midTime === targetMs) return series[mid].priceUsd;
+    if (midTime < targetMs) {
+      left = mid + 1;
+    } else {
+      right = mid - 1;
+    }
+  }
+
+  const prev = Math.max(0, right);
+  const next = Math.min(series.length - 1, left);
+  const prevPoint = series[prev];
+  const nextPoint = series[next];
+  if (!prevPoint || !nextPoint) return prevPoint?.priceUsd ?? nextPoint?.priceUsd ?? 0;
+  return targetMs - prevPoint.timeMs <= nextPoint.timeMs - targetMs ? prevPoint.priceUsd : nextPoint.priceUsd;
 };
 
 const fetchExplorerAction = async (
@@ -453,119 +541,153 @@ const computeUniqueActivity = (sentTxs: AccountTx[]) => {
   };
 };
 
-const fetchTokenPricesUsd = async (
-  contractAddresses: string[]
-): Promise<{ prices: Map<string, number>; requestsUsed: number }> => {
-  const prices = new Map<string, number>();
-  const uniqueContracts = [...new Set(contractAddresses.map(normalizeAddress).filter(Boolean))];
-  if (uniqueContracts.length === 0) {
-    return { prices, requestsUsed: 0 };
+const buildHistoricalPriceContext = async (
+  sentAccountTxs: AccountTx[],
+  sentTokenTxs: TokenTx[],
+  receivedAccountTxs: AccountTx[],
+  receivedTokenTxs: TokenTx[]
+): Promise<HistoricalPriceContext> => {
+  const context: HistoricalPriceContext = {
+    nativeSeries: [],
+    tokenSeriesByContract: new Map<string, PricePoint[]>(),
+    requestsUsed: 0,
+    unavailableContracts: new Set<string>(),
+    skippedContracts: new Set<string>(),
+  };
+
+  const allTokenTxs = [...sentTokenTxs, ...receivedTokenTxs].filter((tx) => tx.value > 0);
+  const allAccountTxs = [...sentAccountTxs, ...receivedAccountTxs].filter((tx) => tx.valueNative > 0);
+
+  const requiresNativePricing =
+    allAccountTxs.length > 0 || allTokenTxs.some((tx) => isHypeLikeSymbol(tx.symbol));
+  const priceableTokenTxs = allTokenTxs.filter(
+    (tx) => !isStableSymbol(tx.symbol) && !isHypeLikeSymbol(tx.symbol) && Boolean(tx.contractAddress)
+  );
+
+  const nativeTimes = allAccountTxs.map((tx) => tx.timeSec);
+  for (const tx of allTokenTxs) {
+    if (isHypeLikeSymbol(tx.symbol)) nativeTimes.push(tx.timeSec);
+  }
+  const tokenTimes = priceableTokenTxs.map((tx) => tx.timeSec);
+  const allTimes = [...nativeTimes, ...tokenTimes].filter((timeSec) => Number.isFinite(timeSec) && timeSec > 0);
+  if (allTimes.length === 0) {
+    return context;
   }
 
-  let requestsUsed = 0;
+  const minTimeSec = Math.min(...allTimes);
+  const maxTimeSec = Math.max(...allTimes);
+  const fromSec = Math.max(0, minTimeSec - 24 * 60 * 60);
+  const toSec = maxTimeSec + 24 * 60 * 60;
 
-  for (const batch of chunk(uniqueContracts, DEXSCREENER_BATCH_SIZE)) {
-    const endpoint = `${DEXSCREENER_TOKEN_API_URL}/${batch.join(",")}`;
-    try {
-      const response = await fetch(endpoint, { method: "GET", cache: "no-store" });
-      requestsUsed += 1;
-      const payload = await readResponseJson(response);
-      if (!response.ok || !Array.isArray(payload)) continue;
+  if (requiresNativePricing) {
+    context.nativeSeries = await fetchCoinGeckoCoinPriceSeries(COINGECKO_HYPE_COIN_ID, fromSec, toSec);
+    context.requestsUsed += 1;
+  }
 
-      const bestPriceByContract = new Map<string, { price: number; liquidityUsd: number }>();
-      for (const row of payload) {
-        if (!isObjectRecord(row)) continue;
-        const baseToken = row.baseToken;
-        if (!isObjectRecord(baseToken)) continue;
+  const contractVolume = new Map<string, number>();
+  for (const transfer of priceableTokenTxs) {
+    const contract = normalizeAddress(transfer.contractAddress);
+    if (!contract) continue;
+    contractVolume.set(contract, (contractVolume.get(contract) ?? 0) + transfer.value);
+  }
 
-        const contract = normalizeAddress(readStringKeys(baseToken, ["address"]));
-        if (!contract || !batch.includes(contract)) continue;
+  const sortedContracts = [...contractVolume.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([contract]) => contract);
+  const selectedContracts = sortedContracts.slice(0, COINGECKO_MAX_CONTRACT_SERIES);
+  for (const skipped of sortedContracts.slice(COINGECKO_MAX_CONTRACT_SERIES)) {
+    context.skippedContracts.add(skipped);
+  }
 
-        const priceUsd = toFiniteNumber(row.priceUsd);
-        if (priceUsd <= 0) continue;
-
-        const liquidity =
-          isObjectRecord(row.liquidity) && Number.isFinite(toFiniteNumber(row.liquidity.usd))
-            ? toFiniteNumber(row.liquidity.usd)
-            : 0;
-
-        const previous = bestPriceByContract.get(contract);
-        if (!previous || liquidity > previous.liquidityUsd) {
-          bestPriceByContract.set(contract, { price: priceUsd, liquidityUsd: liquidity });
-        }
-      }
-
-      for (const [contract, value] of bestPriceByContract.entries()) {
-        prices.set(contract, value.price);
-      }
-    } catch {
-      requestsUsed += 1;
+  for (let i = 0; i < selectedContracts.length; i += 1) {
+    if (i > 0) {
+      await sleep(COINGECKO_REQUEST_DELAY_MS);
+    }
+    const contract = selectedContracts[i];
+    const series = await fetchCoinGeckoContractPriceSeries(contract, fromSec, toSec);
+    context.requestsUsed += 1;
+    if (series.length > 0) {
+      context.tokenSeriesByContract.set(contract, series);
+    } else {
+      context.unavailableContracts.add(contract);
     }
   }
 
-  return { prices, requestsUsed };
+  return context;
 };
 
 const computeVolumeUsd = (
   sentAccountTxs: AccountTx[],
   sentTokenTxs: TokenTx[],
-  nativePriceUsd: number,
-  tokenPricesUsd: Map<string, number>
+  priceContext: HistoricalPriceContext
 ) => {
-  let nativeAmount = 0;
-  let stableUsd = 0;
-  let tokenUsd = 0;
+  let volumeUsd = 0;
 
   for (const tx of sentAccountTxs) {
-    if (tx.valueNative > 0) {
-      nativeAmount += tx.valueNative;
-    }
+    if (tx.valueNative <= 0) continue;
+    const priceUsd = priceAtTimeSec(priceContext.nativeSeries, tx.timeSec);
+    if (priceUsd <= 0) continue;
+    volumeUsd += tx.valueNative * priceUsd;
   }
 
   for (const transfer of sentTokenTxs) {
     if (transfer.value <= 0) continue;
     if (isStableSymbol(transfer.symbol)) {
-      stableUsd += transfer.value;
+      volumeUsd += transfer.value;
       continue;
     }
     if (isHypeLikeSymbol(transfer.symbol)) {
-      nativeAmount += transfer.value;
+      const priceUsd = priceAtTimeSec(priceContext.nativeSeries, transfer.timeSec);
+      if (priceUsd > 0) {
+        volumeUsd += transfer.value * priceUsd;
+      }
       continue;
     }
 
-    const contractPriceUsd = tokenPricesUsd.get(transfer.contractAddress) ?? 0;
-    if (contractPriceUsd > 0) {
-      tokenUsd += transfer.value * contractPriceUsd;
+    const contract = normalizeAddress(transfer.contractAddress);
+    const series = priceContext.tokenSeriesByContract.get(contract);
+    if (!series || series.length === 0) continue;
+    const priceUsd = priceAtTimeSec(series, transfer.timeSec);
+    if (priceUsd > 0) {
+      volumeUsd += transfer.value * priceUsd;
     }
   }
 
-  if (nativePriceUsd <= 0) {
-    return stableUsd + tokenUsd;
-  }
-  return stableUsd + tokenUsd + nativeAmount * nativePriceUsd;
+  return volumeUsd;
 };
 
 const computeBridgeVolumeUsd = (
   receivedAccountTxs: AccountTx[],
   receivedTokenTxs: TokenTx[],
-  nativePriceUsd: number
+  priceContext: HistoricalPriceContext
 ) => {
   let bridgeVolumeUsd = 0;
   for (const tx of receivedAccountTxs) {
-    if (!KNOWN_BRIDGE_SENDERS.has(tx.from)) continue;
-    if (nativePriceUsd > 0 && tx.valueNative > 0) {
-      bridgeVolumeUsd += tx.valueNative * nativePriceUsd;
+    if (!KNOWN_BRIDGE_SENDERS.has(tx.from) || tx.valueNative <= 0) continue;
+    const priceUsd = priceAtTimeSec(priceContext.nativeSeries, tx.timeSec);
+    if (priceUsd > 0) {
+      bridgeVolumeUsd += tx.valueNative * priceUsd;
     }
   }
   for (const tx of receivedTokenTxs) {
-    if (!KNOWN_BRIDGE_SENDERS.has(tx.from)) continue;
-    if (tx.value <= 0) continue;
+    if (!KNOWN_BRIDGE_SENDERS.has(tx.from) || tx.value <= 0) continue;
     if (isStableSymbol(tx.symbol)) {
       bridgeVolumeUsd += tx.value;
       continue;
     }
-    if (nativePriceUsd > 0 && isHypeLikeSymbol(tx.symbol)) {
-      bridgeVolumeUsd += tx.value * nativePriceUsd;
+    if (isHypeLikeSymbol(tx.symbol)) {
+      const priceUsd = priceAtTimeSec(priceContext.nativeSeries, tx.timeSec);
+      if (priceUsd > 0) {
+        bridgeVolumeUsd += tx.value * priceUsd;
+      }
+      continue;
+    }
+    const contract = normalizeAddress(tx.contractAddress);
+    const series = priceContext.tokenSeriesByContract.get(contract);
+    if (!series || series.length === 0) continue;
+    const priceUsd = priceAtTimeSec(series, tx.timeSec);
+    if (priceUsd > 0) {
+      bridgeVolumeUsd += tx.value * priceUsd;
     }
   }
   return bridgeVolumeUsd;
@@ -594,12 +716,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   let truncated = false;
 
   const latestBlock = await fetchLatestBlockNumber();
-  const nativePriceUsd = await fetchHypePriceUsd();
-  requestsUsed += 2;
-
-  if (nativePriceUsd <= 0) {
-    warnings.push("HYPE/USD mid-price could not be resolved, so native-value volume may be understated.");
-  }
+  requestsUsed += 1;
 
   const normalTxResult = await fetchExplorerAction(
     "txlist",
@@ -647,20 +764,17 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     (tx) => `${tx.hash}:${tx.blockNumber}:${tx.timeSec}:${tx.contractAddress}:${tx.symbol}:${tx.value}`
   );
 
-  const priceableContracts = dedupedSentTokenTxs
-    .filter((tx) => tx.contractAddress && !isStableSymbol(tx.symbol) && !isHypeLikeSymbol(tx.symbol))
-    .map((tx) => tx.contractAddress);
-  const tokenPriceResult = await fetchTokenPricesUsd(priceableContracts);
-  requestsUsed += tokenPriceResult.requestsUsed;
-
-  const uniqueActivity = computeUniqueActivity(dedupedSentAccountTxs);
-  const volumeUsd = computeVolumeUsd(
+  const priceContext = await buildHistoricalPriceContext(
     dedupedSentAccountTxs,
     dedupedSentTokenTxs,
-    nativePriceUsd,
-    tokenPriceResult.prices
+    dedupedReceivedAccountTxs,
+    dedupedReceivedTokenTxs
   );
-  const bridgeVolumeUsd = computeBridgeVolumeUsd(dedupedReceivedAccountTxs, dedupedReceivedTokenTxs, nativePriceUsd);
+  requestsUsed += priceContext.requestsUsed;
+
+  const uniqueActivity = computeUniqueActivity(dedupedSentAccountTxs);
+  const volumeUsd = computeVolumeUsd(dedupedSentAccountTxs, dedupedSentTokenTxs, priceContext);
+  const bridgeVolumeUsd = computeBridgeVolumeUsd(dedupedReceivedAccountTxs, dedupedReceivedTokenTxs, priceContext);
   const contractsCount = computeContractsCount(dedupedSentAccountTxs);
 
   let firstTxTimeSec: number | null = null;
@@ -687,8 +801,21 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   warnings.push("TWAB is not exposed by a stable public endpoint, so it is currently reported as unavailable.");
   warnings.push("HEVM metrics are now computed from HyperEVM explorer account transactions (txlist/tokentx/internal).");
   warnings.push(
-    "Token volume is valued from stablecoins, HYPE-family transfers, and Dexscreener prices for other tokens when available."
+    "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
   );
+  if (priceContext.nativeSeries.length === 0) {
+    warnings.push("Historical HYPE/USD series was unavailable, so native-value transfers could not be fully valued.");
+  }
+  if (priceContext.unavailableContracts.size > 0) {
+    warnings.push(
+      `Historical USD series was unavailable for ${priceContext.unavailableContracts.size} token contract(s), so those transfers were excluded from USD valuation.`
+    );
+  }
+  if (priceContext.skippedContracts.size > 0) {
+    warnings.push(
+      `Pricing requests were capped to ${COINGECKO_MAX_CONTRACT_SERIES} token contracts for reliability; ${priceContext.skippedContracts.size} lower-volume contract(s) were skipped.`
+    );
+  }
   if (truncated) {
     warnings.push("Explorer pagination returned repeated or invalid block cursors on at least one dataset.");
   }
