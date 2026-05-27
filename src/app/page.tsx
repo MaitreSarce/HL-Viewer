@@ -13,6 +13,7 @@ type TradingData = {
     spotVolume: number;
     spotFeesPaid: number;
     spotTwab: number | null;
+    hypeStakingTwab: number | null;
     unitVolume: number;
     unitFeesPaid: number;
     totalVolume: number;
@@ -583,6 +584,10 @@ export default function Home() {
                       label: "TWAB (USD)",
                       value: trading.totals.spotTwab === null ? "N/A" : formatUsd(trading.totals.spotTwab),
                     },
+                    {
+                      label: "HYPE Staking TWAB",
+                      value: trading.totals.hypeStakingTwab === null ? "N/A" : formatNum(trading.totals.hypeStakingTwab),
+                    },
                   ]}
                 />
                 <ZoneCard
@@ -636,10 +641,6 @@ export default function Home() {
                   title={`Unit Asset Volume (${histGranularity})`}
                   rows={trading.charts.unit[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
                 />
-                <HistogramCard
-                  title={`Spot TWAB (${histGranularity})`}
-                  rows={trading.charts.spotTwab[histGranularity].map((row) => ({ label: row.period, value: row.twab }))}
-                />
               </div>
               {tradingWarnings.length > 0 ? (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
@@ -684,10 +685,6 @@ export default function Home() {
                 <HistogramCard
                   title={`HEVM Volume (${histGranularity})`}
                   rows={hevm.stats.charts.volume[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
-                />
-                <HistogramCard
-                  title={`HEVM TWAB (${histGranularity})`}
-                  rows={hevm.stats.charts.twab[histGranularity].map((row) => ({ label: row.period, value: row.twab }))}
                 />
               </div>
               {hevmWarnings.length > 0 ? (

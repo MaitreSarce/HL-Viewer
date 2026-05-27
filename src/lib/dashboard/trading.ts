@@ -29,6 +29,7 @@ export type TradingSummary = {
     spotVolume: number;
     spotFeesPaid: number;
     spotTwab: number | null;
+    hypeStakingTwab: number | null;
     unitVolume: number;
     unitFeesPaid: number;
     totalVolume: number;
@@ -69,6 +70,11 @@ type PortfolioRange = {
   [key: string]: unknown;
 };
 type PortfolioResponse = Array<[string, PortfolioRange]>;
+type LedgerUpdate = {
+  time?: number;
+  delta?: Record<string, unknown>;
+  [key: string]: unknown;
+};
 
 type CoinResolver = (rawCoin: string) => string;
 
@@ -352,6 +358,68 @@ const computeTwabFromHistory = (rows: PortfolioHistoryPoint[], endTimeMs: number
   if (end > lastT) area += lastV * (end - lastT);
   const duration = Math.max(0, end - points[0].t);
   if (duration <= 0) return lastV > 0 ? lastV : null;
+  const twab = area / duration;
+  return twab > 0 ? twab : null;
+};
+
+const isHypeLike = (tokenLike: string) => {
+  const t = tokenLike.trim().toUpperCase();
+  return t === "HYPE" || t === "WHYPE" || t === "STHYPE";
+};
+
+const parseStakeDelta = (delta: Record<string, unknown>): number => {
+  const typeUpper = readStringKeys(delta, ["type", "eventType", "action"]).toUpperCase();
+  const tokenUpper = readStringKeys(delta, ["token", "coin", "asset", "symbol"]).toUpperCase();
+  if (tokenUpper && !isHypeLike(tokenUpper)) return 0;
+
+  const amount = abs(toFiniteNumber(readStringKeys(delta, ["amount", "sz", "size", "qty", "delta", "value"])));
+  if (amount <= 0) return 0;
+
+  const looksStake =
+    typeUpper.includes("STAKE") ||
+    typeUpper.includes("DELEGATE") ||
+    typeUpper.includes("UNDELEGATE") ||
+    typeUpper.includes("UNSTAKE");
+  if (!looksStake) return 0;
+
+  if (typeUpper.includes("UNSTAKE") || typeUpper.includes("UNDELEGATE") || typeUpper.includes("WITHDRAW")) {
+    return -amount;
+  }
+  return amount;
+};
+
+const computeStakingTwabFromLedgerUpdates = (updates: LedgerUpdate[], endTimeMs: number): number | null => {
+  const events = updates
+    .map((u) => {
+      const t = Math.floor(toFiniteNumber(u.time ?? 0));
+      const delta = u.delta && typeof u.delta === "object" ? (u.delta as Record<string, unknown>) : null;
+      if (!delta || t <= 0) return null;
+      const stakeDelta = parseStakeDelta(delta);
+      if (!Number.isFinite(stakeDelta) || stakeDelta === 0) return null;
+      return { t, d: stakeDelta };
+    })
+    .filter((e): e is { t: number; d: number } => e !== null)
+    .sort((a, b) => a.t - b.t);
+
+  if (events.length === 0) return null;
+
+  let stake = 0;
+  let area = 0;
+  let start = events[0].t;
+  let lastT = start;
+
+  for (const e of events) {
+    if (e.t > lastT) {
+      area += Math.max(0, stake) * (e.t - lastT);
+      lastT = e.t;
+    }
+    stake = Math.max(0, stake + e.d);
+  }
+
+  const end = Math.max(lastT, Math.floor(endTimeMs));
+  if (end > lastT) area += Math.max(0, stake) * (end - lastT);
+  const duration = Math.max(0, end - start);
+  if (duration <= 0) return stake > 0 ? stake : null;
   const twab = area / duration;
   return twab > 0 ? twab : null;
 };
@@ -709,6 +777,7 @@ export const summarizeTradingFills = (
       spotVolume,
       spotFeesPaid,
       spotTwab,
+      hypeStakingTwab: null,
       unitVolume,
       unitFeesPaid,
       totalVolume,
@@ -820,6 +889,7 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
   }, endTime);
   let spotTwab = summary.totals.spotTwab;
   let portfolioRequestUsed = 0;
+  let stakingRequestUsed = 0;
   try {
     portfolioRequestUsed = 1;
     const portfolio = await fetchHyperliquidInfo<PortfolioResponse>({ type: "portfolio", user: address });
@@ -834,6 +904,21 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
   } catch {
     warnings.push("Could not load portfolio spotState history, so Spot TWAB uses fill-based reconstruction fallback.");
   }
+
+  try {
+    stakingRequestUsed = 1;
+    const updates = await fetchHyperliquidInfo<LedgerUpdate[]>({ type: "userNonFundingLedgerUpdates", user: address });
+    const stakingTwab = computeStakingTwabFromLedgerUpdates(Array.isArray(updates) ? updates : [], endTime);
+    summary.totals.hypeStakingTwab = stakingTwab;
+    if (stakingTwab !== null) {
+      warnings.push("HYPE staking TWAB is estimated from userNonFundingLedgerUpdates staking/delegation deltas.");
+    } else {
+      warnings.push("HYPE staking TWAB unavailable (no staking ledger events detected).");
+    }
+  } catch {
+    warnings.push("Could not load non-funding ledger updates, so HYPE staking TWAB is unavailable.");
+  }
+
   summary.totals.spotTwab = spotTwab;
   if (summary.totals.spotTwab === null) {
     warnings.push("Spot TWAB was unavailable (official history missing and fallback had insufficient data).");
@@ -844,7 +929,8 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
     address,
     period: { startTime, endTime },
     meta: {
-      requestsUsed: rangeResult.requestsUsed + (usedFallback ? 1 : 0) + 2 + outcomeMetaRequestUsed + portfolioRequestUsed,
+      requestsUsed:
+        rangeResult.requestsUsed + (usedFallback ? 1 : 0) + 2 + outcomeMetaRequestUsed + portfolioRequestUsed + stakingRequestUsed,
       usedFallback,
       truncated: rangeResult.truncated,
       warnings,
