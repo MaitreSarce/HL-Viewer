@@ -785,6 +785,8 @@ const computeUnitTwabUsd = (
     const unitToken = matchUnitToken(unitTokenFromPair ?? coinUpper);
     if (!unitToken) continue;
 
+    if (!isStableQuote(pair.quote)) continue;
+
     const timeMs = getFillTime(fill);
     const priceInQuote = toFiniteNumber(readStringKeys(fill, ["px", "price"]));
     const signedBaseSize = signedSpotSize(fill, dirUpper);
@@ -832,16 +834,10 @@ const computeUnitTwabUsd = (
       lastTimeMs = event.timeMs;
     }
 
-    const quotePriceUsd = usdPriceByAsset.get(event.quote) ?? (isStableQuote(event.quote) ? 1 : 0);
-    if (quotePriceUsd > 0) {
-      usdPriceByAsset.set(event.quote, quotePriceUsd);
-      usdPriceByAsset.set(event.base, event.priceInQuote * quotePriceUsd);
-    } else {
-      const basePriceUsd = usdPriceByAsset.get(event.base) ?? 0;
-      if (basePriceUsd > 0) {
-        usdPriceByAsset.set(event.quote, basePriceUsd / event.priceInQuote);
-      }
-    }
+    const quotePriceUsd = isStableQuote(event.quote) ? 1 : 0;
+    if (quotePriceUsd <= 0) continue;
+    usdPriceByAsset.set(event.quote, quotePriceUsd);
+    usdPriceByAsset.set(event.base, event.priceInQuote * quotePriceUsd);
 
     const nextBase = (balancesByAsset.get(event.base) ?? 0) + event.signedBaseSize;
     balancesByAsset.set(event.base, nextBase);
