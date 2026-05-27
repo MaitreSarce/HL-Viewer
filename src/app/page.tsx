@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import Link from "next/link";
 
 type TradingData = {
   source: "api";
@@ -162,8 +163,18 @@ export default function Home() {
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-8 md:px-8">
       <header className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-sm backdrop-blur">
-        <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Portfolio Analytics</p>
-        <h1 className="mt-2 text-2xl font-semibold text-slate-900">Hyperliquid Viewer</h1>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Portfolio Analytics</p>
+            <h1 className="mt-2 text-2xl font-semibold text-slate-900">Hyperliquid Viewer</h1>
+          </div>
+          <Link
+            href="/details"
+            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+          >
+            Details
+          </Link>
+        </div>
       </header>
 
       <form
