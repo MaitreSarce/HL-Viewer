@@ -1016,19 +1016,11 @@ const readHyperevmScanTxMetrics = async (address: string) => {
       const pageMatch = html.match(/Page\s+1\s+of\s+([\d,]+)/i);
       const totalPages = pageMatch?.[1] ? Number(pageMatch[1].replace(/,/g, "")) : 1;
       basePages = Math.max(1, Number.isFinite(totalPages) ? totalPages : 1);
-      const lastPage = Number.isFinite(totalPages) && totalPages > 1 ? totalPages : 1;
-      const lastResp =
-        lastPage === 1
-          ? baseResp
-          : await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&p=${lastPage}`, { cache: "no-store" });
-      if (lastResp.ok) {
-        const lastHtml = lastPage === 1 ? html : await lastResp.text();
-        const parsedRows = parseHyperevmTxRows(lastHtml);
-        const ts = parsedRows
-          .map((row) => row.timeSec ?? 0)
-          .filter((v) => Number.isFinite(v) && v > 1_500_000_000 && v < 3_000_000_000);
-        if (ts.length > 0) firstTxTimeSec = Math.min(...ts);
-      }
+      const firstPageRows = parseHyperevmTxRows(html);
+      const ts = firstPageRows
+        .map((row) => row.timeSec ?? 0)
+        .filter((v) => Number.isFinite(v) && v > 1_500_000_000 && v < 3_000_000_000);
+      if (ts.length > 0) firstTxTimeSec = Math.min(...ts);
     }
   } catch {
     // best effort
@@ -1037,7 +1029,8 @@ const readHyperevmScanTxMetrics = async (address: string) => {
   try {
     const pages = basePages;
     const cappedPages = Math.min(pages, maxPages);
-    const byHash = new Map<string, number>();
+    let feeSum = 0;
+    let minTime = firstTxTimeSec;
     for (let p = 1; p <= cappedPages; p += 1) {
       const pageHtml =
         p === 1
@@ -1045,13 +1038,15 @@ const readHyperevmScanTxMetrics = async (address: string) => {
           : await (await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&p=${p}`, { cache: "no-store" })).text();
       const parsedRows = parseHyperevmTxRows(pageHtml);
       for (const row of parsedRows) {
-        if (!row.hash) continue;
-        if (row.feeNative === null || row.feeNative <= 0) continue;
-        if (!byHash.has(row.hash)) byHash.set(row.hash, row.feeNative);
+        if (row.timeSec && row.timeSec > 1_500_000_000 && row.timeSec < 3_000_000_000) {
+          minTime = minTime === null ? row.timeSec : Math.min(minTime, row.timeSec);
+        }
+        if (row.feeNative !== null && row.feeNative > 0) feeSum += row.feeNative;
       }
     }
     if (pages > cappedPages) truncated = true;
-    outgoingFeeNative = [...byHash.values()].reduce((sum, value) => sum + value, 0);
+    outgoingFeeNative = feeSum;
+    if (minTime !== null) firstTxTimeSec = minTime;
   } catch {
     // best effort
   }
