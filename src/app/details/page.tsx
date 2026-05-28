@@ -124,7 +124,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Fees paid (USD)"
-          explanation="Sum of outgoing account transaction gas fees (`gasUsed * gasPrice`) converted to USD using historical HYPE/USD at each transaction timestamp. Includes failed outgoing tx when gas was spent, to stay explorer-like."
+          explanation="Sum of outgoing account transaction gas fees (`gasUsed * gasPrice`, includes failed outgoing tx if gas was spent) in native HYPE, then converted to USD using latest available HYPE/USD (explorer-style display alignment)."
         />
         <Metric
           name="Different contracts"
@@ -140,7 +140,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Since first tx (d/m/y)"
-          explanation="Age computed from the earliest timestamp in `txlist` (address overview style alignment)."
+          explanation="Primary method: HyperevmScan page parsing (`/txs` last page unix timestamp) to match explorer-facing age. Fallback method: earliest timestamp from `txlist` API rows."
         />
         <Metric
           name="Bridge volume (USD)"
@@ -148,7 +148,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Total tx (explorer-style)"
-          explanation="Aligned to explorer address overview style: total count from `txlist` rows for the wallet."
+          explanation="Primary method: parse HyperevmScan address page meta (`Transactions: ...`) for explorer-facing total. Fallback method: total `txlist` API rows."
         />
         <Metric
           name="Initiated tx (wallet actions)"

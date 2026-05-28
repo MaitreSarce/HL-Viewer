@@ -21,6 +21,7 @@ const COINGECKO_MAX_CONTRACT_SERIES = 24;
 const COINGECKO_REQUEST_DELAY_MS = 300;
 const SYSTEM_BRIDGE_ADDRESS = "0x2222222222222222222222222222222222222222";
 const NATIVE_ASSET_KEY = "__native_hype__";
+const HYPEREVMSCAN_WEB_URL = "https://hyperevmscan.io";
 
 type HevmComputed = {
   twab: number | null;
@@ -897,6 +898,62 @@ const computeHevmFeesPaidUsd = (sentAccountTxs: AccountTx[], priceContext: Histo
   return feesUsd;
 };
 
+const computeHevmFeesPaidNative = (sentAccountTxs: AccountTx[]) => {
+  let feesNative = 0;
+  for (const tx of sentAccountTxs) {
+    if (tx.gasFeeNative > 0) feesNative += tx.gasFeeNative;
+  }
+  return feesNative;
+};
+
+const readHyperevmScanAddressSummary = async (address: string) => {
+  const normalized = normalizeAddress(address);
+  if (!normalized) return { totalTxCount: null as number | null, firstTxTimeSec: null as number | null };
+
+  let totalTxCount: number | null = null;
+  let firstTxTimeSec: number | null = null;
+
+  try {
+    const page = await fetch(`${HYPEREVMSCAN_WEB_URL}/address/${normalized}`, { cache: "no-store" });
+    if (page.ok) {
+      const html = await page.text();
+      const m = html.match(/Transactions:\s*([\d,]+)/i);
+      if (m?.[1]) {
+        const parsed = Number(m[1].replace(/,/g, ""));
+        if (Number.isFinite(parsed) && parsed >= 0) totalTxCount = parsed;
+      }
+    }
+  } catch {
+    // Best effort only.
+  }
+
+  try {
+    const txPage = await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}`, { cache: "no-store" });
+    if (txPage.ok) {
+      const html = await txPage.text();
+      const pageMatch = html.match(/Page\s+1\s+of\s+([\d,]+)/i);
+      const lastPage = pageMatch?.[1] ? Number(pageMatch[1].replace(/,/g, "")) : 1;
+      const targetPage = Number.isFinite(lastPage) && lastPage > 1 ? lastPage : 1;
+      const lastUrl = `${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&p=${targetPage}`;
+      const lastResp = targetPage === 1 ? txPage : await fetch(lastUrl, { cache: "no-store" });
+      if (lastResp.ok) {
+        const lastHtml = targetPage === 1 ? html : await lastResp.text();
+        const matches = [...lastHtml.matchAll(/\b(1[5-9]\d{8}|2\d{9})\b/g)];
+        const times = matches
+          .map((m) => Number(m[1]))
+          .filter((v) => Number.isFinite(v) && v > 1_500_000_000 && v < 3_000_000_000);
+        if (times.length > 0) {
+          firstTxTimeSec = Math.min(...times);
+        }
+      }
+    }
+  } catch {
+    // Best effort only.
+  }
+
+  return { totalTxCount, firstTxTimeSec };
+};
+
 const resolveAssetPriceUsd = (
   asset: BalanceAsset,
   timeSec: number,
@@ -1233,7 +1290,9 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const bridgeVolumeUsd = computeBridgeVolumeUsd(dedupedReceivedAccountTxs, dedupedReceivedTokenTxs, priceContext);
   const hevmVolumeSeries = computeHevmVolumeSeries(dedupedSentAccountTxs, dedupedSentTokenTxs, priceContext);
   const sentAccountTxsForFees = normalTxsIncludingFailed.filter((tx) => tx.from === target);
-  const hevmFeesPaidUsd = computeHevmFeesPaidUsd(sentAccountTxsForFees, priceContext);
+  const hevmFeesPaidNative = computeHevmFeesPaidNative(sentAccountTxsForFees);
+  const latestNativeUsd = priceContext.nativeSeries.length > 0 ? priceContext.nativeSeries[priceContext.nativeSeries.length - 1].priceUsd : 0;
+  const hevmFeesPaidUsd = latestNativeUsd > 0 ? hevmFeesPaidNative * latestNativeUsd : computeHevmFeesPaidUsd(sentAccountTxsForFees, priceContext);
   const contractsCount = computeContractsCount(dedupedSentAccountTxs);
   const balanceEvents = buildBalanceEvents(
     target,
@@ -1259,7 +1318,11 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const firstTxCandidates = normalTxResult.rows
     .map((row) => readTimeSec(row))
     .filter((timeSec) => Number.isFinite(timeSec) && timeSec > 0);
-  const firstTxTimeSec = firstTxCandidates.length > 0 ? Math.min(...firstTxCandidates) : null;
+  let firstTxTimeSec = firstTxCandidates.length > 0 ? Math.min(...firstTxCandidates) : null;
+  let totalTxCount = normalTxResult.rows.length;
+  const explorerSummary = await readHyperevmScanAddressSummary(address);
+  if (explorerSummary.totalTxCount !== null) totalTxCount = explorerSummary.totalTxCount;
+  if (explorerSummary.firstTxTimeSec !== null) firstTxTimeSec = explorerSummary.firstTxTimeSec;
 
   const stats: HevmComputed = {
     twab: twabValue,
@@ -1270,7 +1333,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     activeMonths: uniqueActivity.uniqueMonths,
     sinceFirstTx: firstTxTimeSec ? ageFromTimestamp(firstTxTimeSec * 1000) : { days: 0, months: 0, years: 0 },
     bridgeVolume: bridgeVolumeUsd,
-    totalTxCount: normalTxResult.rows.length,
+    totalTxCount,
     initiatedTxCount: dedupedSentAccountTxs.length,
     firstTxTime: firstTxTimeSec ? firstTxTimeSec * 1000 : null,
     charts: {
@@ -1289,7 +1352,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     "HEVM TWAB is computed from reconstructed transferable balances with conservative historical pricing; unpriced assets are excluded from valuation."
   );
   warnings.push("HEVM metrics are now computed from HyperEVM explorer account transactions (txlist/tokentx/internal).");
-  warnings.push("Total tx and wallet age are aligned to txlist (address overview style). Initiated tx remains wallet-sent account tx only.");
+  warnings.push("Total tx and wallet age now use HyperevmScan page-derived values when available (address + tx list pages), with API fallback.");
   warnings.push(
     "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
   );
