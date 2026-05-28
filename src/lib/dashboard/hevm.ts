@@ -961,6 +961,74 @@ const readHyperevmScanAddressSummary = async (address: string) => {
   return { totalTxCount, firstTxTimeSec };
 };
 
+const parseHtmlNumber = (raw: string) => {
+  const cleaned = raw.replace(/<[^>]*>/g, "").replace(/,/g, "").trim();
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const readHyperevmScanTxMetrics = async (address: string) => {
+  const normalized = normalizeAddress(address);
+  if (!normalized) {
+    return { totalTxCount: null as number | null, firstTxTimeSec: null as number | null, outgoingFeeNative: null as number | null, truncated: false };
+  }
+
+  let totalTxCount: number | null = null;
+  let firstTxTimeSec: number | null = null;
+  let outgoingFeeNative: number | null = null;
+  let truncated = false;
+  const maxPages = 2000;
+
+  try {
+    const baseResp = await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}`, { cache: "no-store" });
+    if (baseResp.ok) {
+      const html = await baseResp.text();
+      const totalMatch = html.match(/A total of\s*([\d,]+)\s*transactions found/i);
+      if (totalMatch?.[1]) totalTxCount = Number(totalMatch[1].replace(/,/g, ""));
+      const pageMatch = html.match(/Page\s+1\s+of\s+([\d,]+)/i);
+      const totalPages = pageMatch?.[1] ? Number(pageMatch[1].replace(/,/g, "")) : 1;
+      const lastPage = Number.isFinite(totalPages) && totalPages > 1 ? totalPages : 1;
+      const lastResp = lastPage === 1 ? baseResp : await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&p=${lastPage}`, { cache: "no-store" });
+      if (lastResp.ok) {
+        const lastHtml = lastPage === 1 ? html : await lastResp.text();
+        const tsMatches = [...lastHtml.matchAll(/class='showLocalDate'[^>]*>[\s\S]*?>(\d{10})</g)];
+        const ts = tsMatches.map((m) => Number(m[1])).filter((v) => Number.isFinite(v) && v > 1_500_000_000 && v < 3_000_000_000);
+        if (ts.length > 0) firstTxTimeSec = Math.min(...ts);
+      }
+    }
+  } catch {
+    // best effort
+  }
+
+  try {
+    const outResp = await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&f=2`, { cache: "no-store" });
+    if (outResp.ok) {
+      const outHtml = await outResp.text();
+      const outPageMatch = outHtml.match(/Page\s+1\s+of\s+([\d,]+)/i);
+      const outTotalPages = outPageMatch?.[1] ? Number(outPageMatch[1].replace(/,/g, "")) : 1;
+      const pages = Math.max(1, Number.isFinite(outTotalPages) ? outTotalPages : 1);
+      const cappedPages = Math.min(pages, maxPages);
+      let feeSum = 0;
+      for (let p = 1; p <= cappedPages; p += 1) {
+        const pageHtml =
+          p === 1
+            ? outHtml
+            : await (await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&f=2&p=${p}`, { cache: "no-store" })).text();
+        const feeMatches = [...pageHtml.matchAll(/class='small text-muted showTxnFee [^']*'>([\s\S]*?)<\/td>/g)];
+        for (const m of feeMatches) {
+          feeSum += parseHtmlNumber(m[1] ?? "");
+        }
+      }
+      if (pages > cappedPages) truncated = true;
+      outgoingFeeNative = feeSum;
+    }
+  } catch {
+    // best effort
+  }
+
+  return { totalTxCount, firstTxTimeSec, outgoingFeeNative, truncated };
+};
+
 const fetchEtherscanV2Txlist = async (address: string): Promise<EtherscanV2TxlistResult> => {
   const apiKey = process.env.ETHERSCAN_API_KEY?.trim();
   if (!apiKey) return { rows: [], requestsUsed: 0, truncated: false };
@@ -1384,6 +1452,10 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const explorerSummary = await readHyperevmScanAddressSummary(address);
   if (explorerSummary.totalTxCount !== null) totalTxCount = explorerSummary.totalTxCount;
   if (explorerSummary.firstTxTimeSec !== null) firstTxTimeSec = explorerSummary.firstTxTimeSec;
+  const scrapedTxMetrics = await readHyperevmScanTxMetrics(address);
+  if (scrapedTxMetrics.totalTxCount !== null) totalTxCount = scrapedTxMetrics.totalTxCount;
+  if (scrapedTxMetrics.firstTxTimeSec !== null) firstTxTimeSec = scrapedTxMetrics.firstTxTimeSec;
+  if (scrapedTxMetrics.truncated) truncated = true;
 
   if (v2TxlistResult.rows.length > 0) {
     const v2ParsedAll = parseAccountTxs(v2TxlistResult.rows, { includeFailed: true });
@@ -1396,6 +1468,9 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     twab: twabValue,
     volume: volumeUsd,
     feesPaid: (() => {
+      if (scrapedTxMetrics.outgoingFeeNative !== null && latestNativeUsd > 0) {
+        return scrapedTxMetrics.outgoingFeeNative * latestNativeUsd;
+      }
       if (v2TxlistResult.rows.length === 0) return hevmFeesPaidUsd;
       const v2ParsedAll = parseAccountTxs(v2TxlistResult.rows, { includeFailed: true });
       const v2Sent = v2ParsedAll.filter((tx) => tx.from === target);
@@ -1432,6 +1507,9 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     warnings.push("Total tx / wallet age / fees are aligned using Etherscan V2 txlist (chainid=999) when ETHERSCAN_API_KEY is configured.");
   } else {
     warnings.push("ETHERSCAN_API_KEY not configured or V2 unavailable; explorer-page/API fallback was used for total tx / wallet age / fees.");
+  }
+  if (scrapedTxMetrics.outgoingFeeNative !== null) {
+    warnings.push("Fees paid is aligned from HyperevmScan outgoing tx pages (`f=2`) by summing displayed Txn Fee values.");
   }
   warnings.push(
     "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
