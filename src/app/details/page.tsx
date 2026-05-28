@@ -124,7 +124,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Fees paid (USD)"
-          explanation="Sum of outgoing transaction gas fees (`gasUsed * gasPrice`) converted to USD using historical HYPE/USD at each transaction timestamp."
+          explanation="Sum of outgoing account transaction gas fees (`gasUsed * gasPrice`) converted to USD using historical HYPE/USD at each transaction timestamp. Includes failed outgoing tx when gas was spent, to stay explorer-like."
         />
         <Metric
           name="Different contracts"

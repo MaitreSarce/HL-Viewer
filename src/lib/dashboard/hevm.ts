@@ -557,16 +557,19 @@ const fetchExplorerAction = async (
   return { rows, requestsUsed, truncated };
 };
 
-const parseAccountTxs = (rows: ExplorerRow[]): AccountTx[] => {
+const parseAccountTxs = (rows: ExplorerRow[], options?: { includeFailed?: boolean }): AccountTx[] => {
   const parsed: AccountTx[] = [];
+  const includeFailed = options?.includeFailed ?? false;
   for (const row of rows) {
     const timeSec = readTimeSec(row);
     if (timeSec <= 0) continue;
 
-    const receiptStatus = readStringKeys(row, ["txreceipt_status"]).trim();
-    const isError = readStringKeys(row, ["isError"]).trim();
-    if (receiptStatus && receiptStatus !== "1") continue;
-    if (!receiptStatus && isError && isError !== "0") continue;
+    if (!includeFailed) {
+      const receiptStatus = readStringKeys(row, ["txreceipt_status"]).trim();
+      const isError = readStringKeys(row, ["isError"]).trim();
+      if (receiptStatus && receiptStatus !== "1") continue;
+      if (!receiptStatus && isError && isError !== "0") continue;
+    }
 
     const hash = readStringKeys(row, ["hash", "transactionHash"]).toLowerCase().trim();
     if (!hash) continue;
@@ -1160,6 +1163,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   truncated = truncated || normalTxResult.truncated;
 
   const normalTxs = parseAccountTxs(normalTxResult.rows);
+  const normalTxsIncludingFailed = parseAccountTxs(normalTxResult.rows, { includeFailed: true });
 
   const [tokenTxResult, internalTxResult] = await Promise.all([
     fetchExplorerAction("tokentx", address, 0, latestBlock, TOKEN_OFFSET),
@@ -1214,7 +1218,11 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const volumeUsd = computeVolumeUsd(dedupedSentAccountTxs, dedupedSentTokenTxs, priceContext);
   const bridgeVolumeUsd = computeBridgeVolumeUsd(dedupedReceivedAccountTxs, dedupedReceivedTokenTxs, priceContext);
   const hevmVolumeSeries = computeHevmVolumeSeries(dedupedSentAccountTxs, dedupedSentTokenTxs, priceContext);
-  const hevmFeesPaidUsd = computeHevmFeesPaidUsd(dedupedSentAccountTxs, priceContext);
+  const sentAccountTxsForFees = dedupeByKey(
+    normalTxsIncludingFailed.filter((tx) => tx.from === target),
+    (tx) => `${tx.hash}:${tx.blockNumber}:${tx.timeSec}:${tx.from}:${tx.to}:${tx.gasFeeNative}`
+  );
+  const hevmFeesPaidUsd = computeHevmFeesPaidUsd(sentAccountTxsForFees, priceContext);
   const contractsCount = computeContractsCount(dedupedSentAccountTxs);
   const balanceEvents = buildBalanceEvents(
     target,
