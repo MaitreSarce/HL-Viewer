@@ -961,6 +961,22 @@ const readHyperevmScanAddressSummary = async (address: string) => {
   return { totalTxCount, firstTxTimeSec };
 };
 
+const readHyperevmScanTxTotalQuick = async (address: string): Promise<number | null> => {
+  const normalized = normalizeAddress(address);
+  if (!normalized) return null;
+  try {
+    const response = await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}`, { cache: "no-store" });
+    if (!response.ok) return null;
+    const html = await response.text();
+    const match = html.match(/A total of\s*([\d,]+)\s*transactions found/i);
+    if (!match?.[1]) return null;
+    const parsed = Number(match[1].replace(/,/g, ""));
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
 const parseHtmlNumber = (raw: string) => {
   const cleaned = raw.replace(/<[^>]*>/g, "").replace(/,/g, "").trim();
   const parsed = Number(cleaned);
@@ -1557,10 +1573,14 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     .filter((timeSec) => Number.isFinite(timeSec) && timeSec > 0);
   let firstTxTimeSec = firstTxCandidates.length > 0 ? Math.min(...firstTxCandidates) : null;
   let totalTxCount = normalTxResult.rows.length;
+  const quickTxTotal = await readHyperevmScanTxTotalQuick(address);
+  if (quickTxTotal !== null) totalTxCount = quickTxTotal;
   const explorerSummary = await readHyperevmScanAddressSummary(address);
-  if (explorerSummary.totalTxCount !== null) totalTxCount = explorerSummary.totalTxCount;
+  if (quickTxTotal === null && explorerSummary.totalTxCount !== null) totalTxCount = explorerSummary.totalTxCount;
   const scrapedTxMetrics = await readHyperevmScanTxMetrics(address, priceContext.nativeSeries);
-  if (scrapedTxMetrics.totalTxCount !== null) totalTxCount = scrapedTxMetrics.totalTxCount;
+  if (quickTxTotal === null && explorerSummary.totalTxCount === null && scrapedTxMetrics.totalTxCount !== null) {
+    totalTxCount = scrapedTxMetrics.totalTxCount;
+  }
   if (scrapedTxMetrics.truncated) truncated = true;
   const currentHypeUsd = await fetchCurrentHypeUsd();
   const feeUsdRate = currentHypeUsd > 0 ? currentHypeUsd : latestNativeUsd;
