@@ -1069,6 +1069,46 @@ const readHyperevmScanTxMetrics = async (address: string, nativeSeries: PricePoi
     // best effort
   }
 
+  // Include failed tx pages for wallet age and fees (fees are paid even on failed tx).
+  try {
+    const failedResp = await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&f=1`, { cache: "no-store" });
+    if (failedResp.ok) {
+      const failedHtml = await failedResp.text();
+      const failedPageMatch = failedHtml.match(/Page\s+1\s+of\s+([\d,]+)/i);
+      const failedTotalPages = failedPageMatch?.[1] ? Number(failedPageMatch[1].replace(/,/g, "")) : 1;
+      const failedPages = Math.max(1, Number.isFinite(failedTotalPages) ? failedTotalPages : 1);
+      const cappedFailedPages = Math.min(failedPages, maxPages);
+      let failedFeeNative = 0;
+      let failedMinTime = firstTxTimeSec;
+
+      for (let p = 1; p <= cappedFailedPages; p += 1) {
+        const pageHtml =
+          p === 1
+            ? failedHtml
+            : await (await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&f=1&p=${p}`, { cache: "no-store" })).text();
+        const parsedRows = parseHyperevmTxRows(pageHtml);
+        for (const row of parsedRows) {
+          if (row.timeSec && row.timeSec > 1_500_000_000 && row.timeSec < 3_000_000_000) {
+            failedMinTime = failedMinTime === null ? row.timeSec : Math.min(failedMinTime, row.timeSec);
+          }
+          if (row.feeNative !== null && row.feeNative > 0) {
+            failedFeeNative += row.feeNative;
+          }
+        }
+      }
+
+      if (failedPages > cappedFailedPages) truncated = true;
+      if (failedFeeNative > 0) {
+        outgoingFeeNative = (outgoingFeeNative ?? 0) + failedFeeNative;
+        // Keep USD-in-historical branch disabled by default; downstream uses current-rate conversion from outgoingFeeNative.
+        outgoingFeeUsdHistorical = null;
+      }
+      if (failedMinTime !== null) firstTxTimeSec = failedMinTime;
+    }
+  } catch {
+    // best effort
+  }
+
   return { totalTxCount, firstTxTimeSec, outgoingFeeNative, outgoingFeeUsdHistorical, truncated };
 };
 
