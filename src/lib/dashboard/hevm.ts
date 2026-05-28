@@ -1029,6 +1029,9 @@ const readHyperevmScanTxMetrics = async (address: string) => {
   try {
     const pages = basePages;
     const cappedPages = Math.min(pages, maxPages);
+    if (!baseHtml) {
+      return { totalTxCount, firstTxTimeSec, outgoingFeeNative, truncated };
+    }
     let feeSum = 0;
     let minTime = firstTxTimeSec;
     for (let p = 1; p <= cappedPages; p += 1) {
@@ -1045,7 +1048,7 @@ const readHyperevmScanTxMetrics = async (address: string) => {
       }
     }
     if (pages > cappedPages) truncated = true;
-    outgoingFeeNative = feeSum;
+    outgoingFeeNative = feeSum > 0 ? feeSum : null;
     if (minTime !== null) firstTxTimeSec = minTime;
   } catch {
     // best effort
@@ -1516,7 +1519,11 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     twab: twabValue,
     volume: volumeUsd,
     feesPaid: (() => {
-      if (scrapedTxMetrics.outgoingFeeNative !== null && feeUsdRate > 0) {
+      if (
+        scrapedTxMetrics.outgoingFeeNative !== null &&
+        scrapedTxMetrics.outgoingFeeNative > 0 &&
+        feeUsdRate > 0
+      ) {
         return scrapedTxMetrics.outgoingFeeNative * feeUsdRate;
       }
       if (v2TxlistResult.rows.length === 0) return hevmFeesPaidUsd;
