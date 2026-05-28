@@ -1059,6 +1059,27 @@ const readHyperevmScanTxMetrics = async (address: string) => {
   return { totalTxCount, firstTxTimeSec, outgoingFeeNative, truncated };
 };
 
+const fetchCurrentHypeUsd = async () => {
+  try {
+    const params = new URLSearchParams({
+      ids: COINGECKO_HYPE_COIN_ID,
+      vs_currencies: "usd",
+    });
+    const response = await fetch(`${COINGECKO_API_URL}/simple/price?${params.toString()}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    const payload = await readResponseJson(response);
+    if (!response.ok || !isObjectRecord(payload)) return 0;
+    const coin = payload[COINGECKO_HYPE_COIN_ID];
+    if (!isObjectRecord(coin)) return 0;
+    const price = toFiniteNumber(coin.usd);
+    return price > 0 ? price : 0;
+  } catch {
+    return 0;
+  }
+};
+
 const fetchEtherscanV2Txlist = async (address: string): Promise<EtherscanV2TxlistResult> => {
   const apiKey = process.env.ETHERSCAN_API_KEY?.trim();
   if (!apiKey) return { rows: [], requestsUsed: 0, truncated: false };
@@ -1486,6 +1507,8 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   if (scrapedTxMetrics.totalTxCount !== null) totalTxCount = scrapedTxMetrics.totalTxCount;
   if (scrapedTxMetrics.firstTxTimeSec !== null) firstTxTimeSec = scrapedTxMetrics.firstTxTimeSec;
   if (scrapedTxMetrics.truncated) truncated = true;
+  const currentHypeUsd = await fetchCurrentHypeUsd();
+  const feeUsdRate = currentHypeUsd > 0 ? currentHypeUsd : latestNativeUsd;
 
   if (v2TxlistResult.rows.length > 0) {
     const v2ParsedAll = parseAccountTxs(v2TxlistResult.rows, { includeFailed: true });
@@ -1498,14 +1521,14 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     twab: twabValue,
     volume: volumeUsd,
     feesPaid: (() => {
-      if (scrapedTxMetrics.outgoingFeeNative !== null && latestNativeUsd > 0) {
-        return scrapedTxMetrics.outgoingFeeNative * latestNativeUsd;
+      if (scrapedTxMetrics.outgoingFeeNative !== null && feeUsdRate > 0) {
+        return scrapedTxMetrics.outgoingFeeNative * feeUsdRate;
       }
       if (v2TxlistResult.rows.length === 0) return hevmFeesPaidUsd;
       const v2ParsedAll = parseAccountTxs(v2TxlistResult.rows, { includeFailed: true });
       const v2Sent = v2ParsedAll.filter((tx) => tx.from === target);
       const v2FeesNative = computeHevmFeesPaidNative(v2Sent);
-      if (latestNativeUsd > 0 && v2FeesNative > 0) return v2FeesNative * latestNativeUsd;
+      if (feeUsdRate > 0 && v2FeesNative > 0) return v2FeesNative * feeUsdRate;
       return hevmFeesPaidUsd;
     })(),
     contractsCount,
