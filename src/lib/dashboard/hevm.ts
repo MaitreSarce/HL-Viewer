@@ -1556,7 +1556,11 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const explorerSummary = await readHyperevmScanAddressSummary(address);
   if (explorerSummary.totalTxCount !== null) totalTxCount = explorerSummary.totalTxCount;
   const scrapedTxMetrics = await readHyperevmScanTxMetrics(address, priceContext.nativeSeries);
-  if (scrapedTxMetrics.totalTxCount !== null) totalTxCount = scrapedTxMetrics.totalTxCount;
+  if (explorerSummary.totalTxCount !== null) {
+    totalTxCount = explorerSummary.totalTxCount;
+  } else if (scrapedTxMetrics.totalTxCount !== null) {
+    totalTxCount = scrapedTxMetrics.totalTxCount;
+  }
   if (scrapedTxMetrics.firstTxTimeSec !== null) firstTxTimeSec = scrapedTxMetrics.firstTxTimeSec;
   if (scrapedTxMetrics.truncated) truncated = true;
   const currentHypeUsd = await fetchCurrentHypeUsd();
@@ -1565,7 +1569,6 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   if (v2TxlistResult.rows.length > 0) {
     const v2ParsedAll = parseAccountTxs(v2TxlistResult.rows, { includeFailed: true });
     const v2Times = v2ParsedAll.map((tx) => tx.timeSec).filter((t) => t > 0);
-    totalTxCount = v2TxlistResult.rows.length;
     if (firstTxTimeSec === null && v2Times.length > 0) firstTxTimeSec = Math.min(...v2Times);
   }
 
