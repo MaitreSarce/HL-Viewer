@@ -9,6 +9,7 @@ import {
 import { computeTwabSeriesUsdFromValuePoints, computeTwabUsdFromValuePoints, TwabValuePoint } from "@/lib/dashboard/twab";
 
 const HYPERSCAN_API_URL = "https://www.hyperscan.com/api";
+const ETHERSCAN_V2_API_URL = "https://api.etherscan.io/v2/api";
 const HYPEREVM_RPC_URL = "https://rpc.hyperliquid.xyz/evm";
 const COINGECKO_API_URL = "https://api.coingecko.com/api/v3";
 const COINGECKO_HYPE_COIN_ID = "hyperliquid";
@@ -62,6 +63,12 @@ type ExplorerAction = "txlist" | "tokentx" | "txlistinternal";
 type ExplorerRow = Record<string, unknown>;
 
 type ExplorerFetchResult = {
+  rows: ExplorerRow[];
+  requestsUsed: number;
+  truncated: boolean;
+};
+
+type EtherscanV2TxlistResult = {
   rows: ExplorerRow[];
   requestsUsed: number;
   truncated: boolean;
@@ -954,6 +961,56 @@ const readHyperevmScanAddressSummary = async (address: string) => {
   return { totalTxCount, firstTxTimeSec };
 };
 
+const fetchEtherscanV2Txlist = async (address: string): Promise<EtherscanV2TxlistResult> => {
+  const apiKey = process.env.ETHERSCAN_API_KEY?.trim();
+  if (!apiKey) return { rows: [], requestsUsed: 0, truncated: false };
+
+  const rows: ExplorerRow[] = [];
+  const offset = 1000;
+  const maxPages = 200;
+  let requestsUsed = 0;
+  let truncated = false;
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const params = new URLSearchParams({
+      chainid: String(HYPEREVM_CHAIN_ID),
+      module: "account",
+      action: "txlist",
+      address,
+      startblock: "0",
+      endblock: "99999999",
+      page: String(page),
+      offset: String(offset),
+      sort: "asc",
+      apikey: apiKey,
+    });
+
+    const response = await fetch(`${ETHERSCAN_V2_API_URL}?${params.toString()}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    requestsUsed += 1;
+
+    const payload = await readResponseJson(response);
+    if (!response.ok || !isObjectRecord(payload)) break;
+    const status = readStringKeys(payload, ["status"]).trim();
+    const message = readStringKeys(payload, ["message"]).trim();
+    const resultRaw = payload.result;
+    if (!Array.isArray(resultRaw)) {
+      if (status === "0" && /No transactions/i.test(message)) break;
+      break;
+    }
+
+    const pageRows = resultRaw.filter((item) => isObjectRecord(item)) as ExplorerRow[];
+    if (pageRows.length === 0) break;
+    rows.push(...pageRows);
+    if (pageRows.length < offset) break;
+    if (page === maxPages) truncated = true;
+  }
+
+  return { rows, requestsUsed, truncated };
+};
+
 const resolveAssetPriceUsd = (
   asset: BalanceAsset,
   timeSec: number,
@@ -1235,6 +1292,10 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   requestsUsed += normalTxResult.requestsUsed;
   truncated = truncated || normalTxResult.truncated;
 
+  const v2TxlistResult = await fetchEtherscanV2Txlist(address);
+  requestsUsed += v2TxlistResult.requestsUsed;
+  truncated = truncated || v2TxlistResult.truncated;
+
   const normalTxs = parseAccountTxs(normalTxResult.rows);
   const normalTxsIncludingFailed = parseAccountTxs(normalTxResult.rows, { includeFailed: true });
 
@@ -1324,10 +1385,24 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   if (explorerSummary.totalTxCount !== null) totalTxCount = explorerSummary.totalTxCount;
   if (explorerSummary.firstTxTimeSec !== null) firstTxTimeSec = explorerSummary.firstTxTimeSec;
 
+  if (v2TxlistResult.rows.length > 0) {
+    const v2ParsedAll = parseAccountTxs(v2TxlistResult.rows, { includeFailed: true });
+    const v2Times = v2ParsedAll.map((tx) => tx.timeSec).filter((t) => t > 0);
+    totalTxCount = v2TxlistResult.rows.length;
+    if (v2Times.length > 0) firstTxTimeSec = Math.min(...v2Times);
+  }
+
   const stats: HevmComputed = {
     twab: twabValue,
     volume: volumeUsd,
-    feesPaid: hevmFeesPaidUsd,
+    feesPaid: (() => {
+      if (v2TxlistResult.rows.length === 0) return hevmFeesPaidUsd;
+      const v2ParsedAll = parseAccountTxs(v2TxlistResult.rows, { includeFailed: true });
+      const v2Sent = v2ParsedAll.filter((tx) => tx.from === target);
+      const v2FeesNative = computeHevmFeesPaidNative(v2Sent);
+      if (latestNativeUsd > 0 && v2FeesNative > 0) return v2FeesNative * latestNativeUsd;
+      return hevmFeesPaidUsd;
+    })(),
     contractsCount,
     activeDays: uniqueActivity.uniqueDays,
     activeMonths: uniqueActivity.uniqueMonths,
@@ -1353,6 +1428,11 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   );
   warnings.push("HEVM metrics are now computed from HyperEVM explorer account transactions (txlist/tokentx/internal).");
   warnings.push("Total tx and wallet age now use HyperevmScan page-derived values when available (address + tx list pages), with API fallback.");
+  if (v2TxlistResult.rows.length > 0) {
+    warnings.push("Total tx / wallet age / fees are aligned using Etherscan V2 txlist (chainid=999) when ETHERSCAN_API_KEY is configured.");
+  } else {
+    warnings.push("ETHERSCAN_API_KEY not configured or V2 unavailable; explorer-page/API fallback was used for total tx / wallet age / fees.");
+  }
   warnings.push(
     "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
   );
