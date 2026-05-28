@@ -50,7 +50,8 @@ type HevmData = {
     activeMonths: number;
     sinceFirstTx: { days: number; months: number; years: number };
     bridgeVolume: number;
-    txCount: number;
+    totalTxCount: number;
+    initiatedTxCount: number;
     charts: {
       volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
       twab: Record<"day" | "week" | "month" | "year", Array<{ period: string; twab: number }>>;
@@ -703,7 +704,8 @@ export default function Home() {
                       value: `${hevm.stats.sinceFirstTx.days}d / ${hevm.stats.sinceFirstTx.months}m / ${hevm.stats.sinceFirstTx.years}y`,
                     },
                     { label: "Bridge volume", value: formatUsd(hevm.stats.bridgeVolume) },
-                    { label: "Number of tx", value: formatNum(hevm.stats.txCount) },
+                    { label: "Total tx (explorer-style)", value: formatNum(hevm.stats.totalTxCount) },
+                    { label: "Initiated tx (wallet actions)", value: formatNum(hevm.stats.initiatedTxCount) },
                   ]}
                 />
               </div>

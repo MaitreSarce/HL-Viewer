@@ -35,7 +35,8 @@ type HevmComputed = {
     years: number;
   };
   bridgeVolume: number;
-  txCount: number;
+  totalTxCount: number;
+  initiatedTxCount: number;
   firstTxTime: number | null;
   charts: {
     volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
@@ -1249,7 +1250,13 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     activeMonths: uniqueActivity.uniqueMonths,
     sinceFirstTx: firstTxTimeSec ? ageFromTimestamp(firstTxTimeSec * 1000) : { days: 0, months: 0, years: 0 },
     bridgeVolume: bridgeVolumeUsd,
-    txCount: dedupedSentAccountTxs.length,
+    totalTxCount:
+      dedupedSentAccountTxs.length +
+      dedupedReceivedAccountTxs.length +
+      dedupedSentTokenTxs.length +
+      dedupedReceivedTokenTxs.length +
+      dedupedInternalTxs.length,
+    initiatedTxCount: dedupedSentAccountTxs.length,
     firstTxTime: firstTxTimeSec ? firstTxTimeSec * 1000 : null,
     charts: {
       volume: hevmVolumeSeries,

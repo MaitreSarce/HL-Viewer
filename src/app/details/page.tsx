@@ -147,8 +147,12 @@ export default function DetailsPage() {
           explanation="Sum of incoming transfers where sender is in the known bridge sender list, valued with the same historical USD rules as HEVM volume."
         />
         <Metric
-          name="Number of tx"
-          explanation="Count of deduplicated outgoing account transactions (`txlist`) after self-transfer exclusion."
+          name="Total tx (explorer-style)"
+          explanation="Count of deduplicated HEVM rows across account tx (`txlist`, sent+received), token transfers (`tokentx`, sent+received), and internal tx (`txlistinternal`)."
+        />
+        <Metric
+          name="Initiated tx (wallet actions)"
+          explanation="Count of deduplicated outgoing account transactions only (`txlist` where `from == wallet`), excluding self-transfers."
         />
         <p>
           Pricing reliability safeguards: token historical pricing requests are capped (top contracts by transferred amount), and
