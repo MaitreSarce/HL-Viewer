@@ -1079,6 +1079,7 @@ const readHyperevmScanTxMetrics = async (address: string, nativeSeries: PricePoi
       const failedPages = Math.max(1, Number.isFinite(failedTotalPages) ? failedTotalPages : 1);
       const cappedFailedPages = Math.min(failedPages, maxPages);
       let failedFeeNative = 0;
+      let failedFeeUsd = 0;
       let failedMinTime = firstTxTimeSec;
 
       for (let p = 1; p <= cappedFailedPages; p += 1) {
@@ -1093,6 +1094,10 @@ const readHyperevmScanTxMetrics = async (address: string, nativeSeries: PricePoi
           }
           if (row.feeNative !== null && row.feeNative > 0) {
             failedFeeNative += row.feeNative;
+            if (row.timeSec) {
+              const px = priceAtTimeSec(nativeSeries, row.timeSec);
+              if (px > 0) failedFeeUsd += row.feeNative * px;
+            }
           }
         }
       }
@@ -1100,8 +1105,7 @@ const readHyperevmScanTxMetrics = async (address: string, nativeSeries: PricePoi
       if (failedPages > cappedFailedPages) truncated = true;
       if (failedFeeNative > 0) {
         outgoingFeeNative = (outgoingFeeNative ?? 0) + failedFeeNative;
-        // Keep USD-in-historical branch disabled by default; downstream uses current-rate conversion from outgoingFeeNative.
-        outgoingFeeUsdHistorical = null;
+        outgoingFeeUsdHistorical = (outgoingFeeUsdHistorical ?? 0) + failedFeeUsd;
       }
       if (failedMinTime !== null) firstTxTimeSec = failedMinTime;
     }
@@ -1571,6 +1575,12 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     twab: twabValue,
     volume: volumeUsd,
     feesPaid: (() => {
+      if (
+        scrapedTxMetrics.outgoingFeeUsdHistorical !== null &&
+        scrapedTxMetrics.outgoingFeeUsdHistorical > 0
+      ) {
+        return scrapedTxMetrics.outgoingFeeUsdHistorical;
+      }
       if (hevmFeesPaidNative > 0 && feeUsdRate > 0) {
         return hevmFeesPaidNative * feeUsdRate;
       }
