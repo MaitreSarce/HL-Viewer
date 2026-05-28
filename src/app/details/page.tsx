@@ -148,7 +148,11 @@ export default function DetailsPage() {
         />
         <Metric
           name="Total tx (explorer-style)"
-          explanation="Raw row count from HyperEVM explorer endpoints: `txlist` + `tokentx` + `txlistinternal` (no app-side dedup/filtering). This is intended to match explorer-style totals."
+          explanation="Raw row count from HyperEVM explorer endpoints: `txlist` + `tokentx` + `txlistinternal` (no app-side dedup/filtering), all scanned from block 0 to latest block."
+        />
+        <Metric
+          name="Account tx / Token tx / Internal tx"
+          explanation="Breakdown of the explorer-style total by source endpoint: `txlist`, `tokentx`, and `txlistinternal`."
         />
         <Metric
           name="Initiated tx (wallet actions)"

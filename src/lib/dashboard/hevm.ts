@@ -38,6 +38,9 @@ type HevmComputed = {
   totalTxCount: number;
   initiatedTxCount: number;
   dedupedTxCount: number;
+  accountTxCount: number;
+  tokenTxCount: number;
+  internalTxCount: number;
   firstTxTime: number | null;
   charts: {
     volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
@@ -1157,11 +1160,10 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   truncated = truncated || normalTxResult.truncated;
 
   const normalTxs = parseAccountTxs(normalTxResult.rows);
-  const firstTxBlock = normalTxs.length > 0 ? Math.min(...normalTxs.map((tx) => tx.blockNumber)) : 0;
 
   const [tokenTxResult, internalTxResult] = await Promise.all([
-    fetchExplorerAction("tokentx", address, firstTxBlock, latestBlock, TOKEN_OFFSET),
-    fetchExplorerAction("txlistinternal", address, firstTxBlock, latestBlock, INTERNAL_OFFSET),
+    fetchExplorerAction("tokentx", address, 0, latestBlock, TOKEN_OFFSET),
+    fetchExplorerAction("txlistinternal", address, 0, latestBlock, INTERNAL_OFFSET),
   ]);
   requestsUsed += tokenTxResult.requestsUsed + internalTxResult.requestsUsed;
   truncated = truncated || tokenTxResult.truncated || internalTxResult.truncated;
@@ -1261,6 +1263,9 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
       dedupedSentTokenTxs.length +
       dedupedReceivedTokenTxs.length +
       dedupedInternalTxs.length,
+    accountTxCount: normalTxResult.rows.length,
+    tokenTxCount: tokenTxResult.rows.length,
+    internalTxCount: internalTxResult.rows.length,
     firstTxTime: firstTxTimeSec ? firstTxTimeSec * 1000 : null,
     charts: {
       volume: hevmVolumeSeries,

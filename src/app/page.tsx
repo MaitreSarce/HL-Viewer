@@ -53,6 +53,9 @@ type HevmData = {
     totalTxCount: number;
     initiatedTxCount: number;
     dedupedTxCount: number;
+    accountTxCount: number;
+    tokenTxCount: number;
+    internalTxCount: number;
     charts: {
       volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
       twab: Record<"day" | "week" | "month" | "year", Array<{ period: string; twab: number }>>;
@@ -706,6 +709,9 @@ export default function Home() {
                     },
                     { label: "Bridge volume", value: formatUsd(hevm.stats.bridgeVolume) },
                     { label: "Total tx (explorer-style)", value: formatNum(hevm.stats.totalTxCount) },
+                    { label: "Account tx (txlist)", value: formatNum(hevm.stats.accountTxCount) },
+                    { label: "Token tx (tokentx)", value: formatNum(hevm.stats.tokenTxCount) },
+                    { label: "Internal tx (txlistinternal)", value: formatNum(hevm.stats.internalTxCount) },
                     { label: "Initiated tx (wallet actions)", value: formatNum(hevm.stats.initiatedTxCount) },
                   ]}
                 />
