@@ -1003,15 +1003,19 @@ const readHyperevmScanTxMetrics = async (address: string) => {
   let outgoingFeeNative: number | null = null;
   let truncated = false;
   const maxPages = 2000;
+  let baseHtml = "";
+  let basePages = 1;
 
   try {
     const baseResp = await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}`, { cache: "no-store" });
     if (baseResp.ok) {
       const html = await baseResp.text();
+      baseHtml = html;
       const totalMatch = html.match(/A total of\s*([\d,]+)\s*transactions found/i);
       if (totalMatch?.[1]) totalTxCount = Number(totalMatch[1].replace(/,/g, ""));
       const pageMatch = html.match(/Page\s+1\s+of\s+([\d,]+)/i);
       const totalPages = pageMatch?.[1] ? Number(pageMatch[1].replace(/,/g, "")) : 1;
+      basePages = Math.max(1, Number.isFinite(totalPages) ? totalPages : 1);
       const lastPage = Number.isFinite(totalPages) && totalPages > 1 ? totalPages : 1;
       const lastResp =
         lastPage === 1
@@ -1031,29 +1035,23 @@ const readHyperevmScanTxMetrics = async (address: string) => {
   }
 
   try {
-    const outResp = await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&f=2`, { cache: "no-store" });
-    if (outResp.ok) {
-      const outHtml = await outResp.text();
-      const outPageMatch = outHtml.match(/Page\s+1\s+of\s+([\d,]+)/i);
-      const outTotalPages = outPageMatch?.[1] ? Number(outPageMatch[1].replace(/,/g, "")) : 1;
-      const pages = Math.max(1, Number.isFinite(outTotalPages) ? outTotalPages : 1);
-      const cappedPages = Math.min(pages, maxPages);
-      const byHash = new Map<string, number>();
-      for (let p = 1; p <= cappedPages; p += 1) {
-        const pageHtml =
-          p === 1
-            ? outHtml
-            : await (await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&f=2&p=${p}`, { cache: "no-store" })).text();
-        const parsedRows = parseHyperevmTxRows(pageHtml);
-        for (const row of parsedRows) {
-          if (!row.hash) continue;
-          if (row.feeNative === null || row.feeNative <= 0) continue;
-          if (!byHash.has(row.hash)) byHash.set(row.hash, row.feeNative);
-        }
+    const pages = basePages;
+    const cappedPages = Math.min(pages, maxPages);
+    const byHash = new Map<string, number>();
+    for (let p = 1; p <= cappedPages; p += 1) {
+      const pageHtml =
+        p === 1
+          ? baseHtml
+          : await (await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&p=${p}`, { cache: "no-store" })).text();
+      const parsedRows = parseHyperevmTxRows(pageHtml);
+      for (const row of parsedRows) {
+        if (!row.hash) continue;
+        if (row.feeNative === null || row.feeNative <= 0) continue;
+        if (!byHash.has(row.hash)) byHash.set(row.hash, row.feeNative);
       }
-      if (pages > cappedPages) truncated = true;
-      outgoingFeeNative = [...byHash.values()].reduce((sum, value) => sum + value, 0);
     }
+    if (pages > cappedPages) truncated = true;
+    outgoingFeeNative = [...byHash.values()].reduce((sum, value) => sum + value, 0);
   } catch {
     // best effort
   }
@@ -1541,7 +1539,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     warnings.push("ETHERSCAN_API_KEY not configured or V2 unavailable; explorer-page/API fallback was used for total tx / wallet age / fees.");
   }
   if (scrapedTxMetrics.outgoingFeeNative !== null) {
-    warnings.push("Fees paid is aligned from HyperevmScan outgoing tx pages (`f=2`) by summing displayed Txn Fee values.");
+    warnings.push("Fees paid is aligned from HyperevmScan tx pages (`/txs`) by summing displayed Txn Fee values across all pages (unique hash dedup).");
   }
   warnings.push(
     "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
