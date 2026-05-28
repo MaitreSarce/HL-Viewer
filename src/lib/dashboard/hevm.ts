@@ -1515,7 +1515,6 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   let totalTxCount = normalTxResult.rows.length;
   const explorerSummary = await readHyperevmScanAddressSummary(address);
   if (explorerSummary.totalTxCount !== null) totalTxCount = explorerSummary.totalTxCount;
-  if (explorerSummary.firstTxTimeSec !== null) firstTxTimeSec = explorerSummary.firstTxTimeSec;
   const scrapedTxMetrics = await readHyperevmScanTxMetrics(address, priceContext.nativeSeries);
   if (scrapedTxMetrics.totalTxCount !== null) totalTxCount = scrapedTxMetrics.totalTxCount;
   if (scrapedTxMetrics.firstTxTimeSec !== null) firstTxTimeSec = scrapedTxMetrics.firstTxTimeSec;
@@ -1527,19 +1526,13 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     const v2ParsedAll = parseAccountTxs(v2TxlistResult.rows, { includeFailed: true });
     const v2Times = v2ParsedAll.map((tx) => tx.timeSec).filter((t) => t > 0);
     totalTxCount = v2TxlistResult.rows.length;
-    if (v2Times.length > 0) firstTxTimeSec = Math.min(...v2Times);
+    if (firstTxTimeSec === null && v2Times.length > 0) firstTxTimeSec = Math.min(...v2Times);
   }
 
   const stats: HevmComputed = {
     twab: twabValue,
     volume: volumeUsd,
     feesPaid: (() => {
-      if (
-        scrapedTxMetrics.outgoingFeeUsdHistorical !== null &&
-        scrapedTxMetrics.outgoingFeeUsdHistorical > 0
-      ) {
-        return scrapedTxMetrics.outgoingFeeUsdHistorical;
-      }
       if (
         scrapedTxMetrics.outgoingFeeNative !== null &&
         scrapedTxMetrics.outgoingFeeNative > 0 &&
@@ -1585,7 +1578,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     warnings.push("ETHERSCAN_API_KEY not configured or V2 unavailable; explorer-page/API fallback was used for total tx / wallet age / fees.");
   }
   if (scrapedTxMetrics.outgoingFeeNative !== null) {
-    warnings.push("Fees paid is aligned from HyperevmScan tx pages (`/txs`) by summing displayed Txn Fee values across all pages and converting each tx fee with historical HYPE/USD at tx time.");
+    warnings.push("Fees paid is aligned from HyperevmScan tx pages (`/txs`) by summing displayed Txn Fee values across all pages and converting with current HYPE/USD.");
   }
   warnings.push(
     "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
