@@ -992,15 +992,22 @@ const parseHyperevmTxRows = (html: string): ScrapedTxRow[] => {
   return rows;
 };
 
-const readHyperevmScanTxMetrics = async (address: string) => {
+const readHyperevmScanTxMetrics = async (address: string, nativeSeries: PricePoint[]) => {
   const normalized = normalizeAddress(address);
   if (!normalized) {
-    return { totalTxCount: null as number | null, firstTxTimeSec: null as number | null, outgoingFeeNative: null as number | null, truncated: false };
+    return {
+      totalTxCount: null as number | null,
+      firstTxTimeSec: null as number | null,
+      outgoingFeeNative: null as number | null,
+      outgoingFeeUsdHistorical: null as number | null,
+      truncated: false,
+    };
   }
 
   let totalTxCount: number | null = null;
   let firstTxTimeSec: number | null = null;
   let outgoingFeeNative: number | null = null;
+  let outgoingFeeUsdHistorical: number | null = null;
   let truncated = false;
   const maxPages = 2000;
   let baseHtml = "";
@@ -1030,9 +1037,10 @@ const readHyperevmScanTxMetrics = async (address: string) => {
     const pages = basePages;
     const cappedPages = Math.min(pages, maxPages);
     if (!baseHtml) {
-      return { totalTxCount, firstTxTimeSec, outgoingFeeNative, truncated };
+      return { totalTxCount, firstTxTimeSec, outgoingFeeNative, outgoingFeeUsdHistorical, truncated };
     }
     let feeSum = 0;
+    let feeUsdSum = 0;
     let minTime = firstTxTimeSec;
     for (let p = 1; p <= cappedPages; p += 1) {
       const pageHtml =
@@ -1044,17 +1052,24 @@ const readHyperevmScanTxMetrics = async (address: string) => {
         if (row.timeSec && row.timeSec > 1_500_000_000 && row.timeSec < 3_000_000_000) {
           minTime = minTime === null ? row.timeSec : Math.min(minTime, row.timeSec);
         }
-        if (row.feeNative !== null && row.feeNative > 0) feeSum += row.feeNative;
+        if (row.feeNative !== null && row.feeNative > 0) {
+          feeSum += row.feeNative;
+          if (row.timeSec) {
+            const px = priceAtTimeSec(nativeSeries, row.timeSec);
+            if (px > 0) feeUsdSum += row.feeNative * px;
+          }
+        }
       }
     }
     if (pages > cappedPages) truncated = true;
     outgoingFeeNative = feeSum > 0 ? feeSum : null;
+    outgoingFeeUsdHistorical = feeUsdSum > 0 ? feeUsdSum : null;
     if (minTime !== null) firstTxTimeSec = minTime;
   } catch {
     // best effort
   }
 
-  return { totalTxCount, firstTxTimeSec, outgoingFeeNative, truncated };
+  return { totalTxCount, firstTxTimeSec, outgoingFeeNative, outgoingFeeUsdHistorical, truncated };
 };
 
 const fetchCurrentHypeUsd = async () => {
@@ -1501,7 +1516,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const explorerSummary = await readHyperevmScanAddressSummary(address);
   if (explorerSummary.totalTxCount !== null) totalTxCount = explorerSummary.totalTxCount;
   if (explorerSummary.firstTxTimeSec !== null) firstTxTimeSec = explorerSummary.firstTxTimeSec;
-  const scrapedTxMetrics = await readHyperevmScanTxMetrics(address);
+  const scrapedTxMetrics = await readHyperevmScanTxMetrics(address, priceContext.nativeSeries);
   if (scrapedTxMetrics.totalTxCount !== null) totalTxCount = scrapedTxMetrics.totalTxCount;
   if (scrapedTxMetrics.firstTxTimeSec !== null) firstTxTimeSec = scrapedTxMetrics.firstTxTimeSec;
   if (scrapedTxMetrics.truncated) truncated = true;
@@ -1519,6 +1534,12 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     twab: twabValue,
     volume: volumeUsd,
     feesPaid: (() => {
+      if (
+        scrapedTxMetrics.outgoingFeeUsdHistorical !== null &&
+        scrapedTxMetrics.outgoingFeeUsdHistorical > 0
+      ) {
+        return scrapedTxMetrics.outgoingFeeUsdHistorical;
+      }
       if (
         scrapedTxMetrics.outgoingFeeNative !== null &&
         scrapedTxMetrics.outgoingFeeNative > 0 &&
@@ -1564,7 +1585,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     warnings.push("ETHERSCAN_API_KEY not configured or V2 unavailable; explorer-page/API fallback was used for total tx / wallet age / fees.");
   }
   if (scrapedTxMetrics.outgoingFeeNative !== null) {
-    warnings.push("Fees paid is aligned from HyperevmScan tx pages (`/txs`) by summing displayed Txn Fee values across all pages (unique hash dedup).");
+    warnings.push("Fees paid is aligned from HyperevmScan tx pages (`/txs`) by summing displayed Txn Fee values across all pages and converting each tx fee with historical HYPE/USD at tx time.");
   }
   warnings.push(
     "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
