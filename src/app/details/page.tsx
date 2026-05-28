@@ -140,7 +140,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Since first tx (d/m/y)"
-          explanation="Age computed from the earliest raw explorer timestamp across `txlist`, `tokentx`, and `txlistinternal` (block 0 to latest)."
+          explanation="Age computed from the earliest timestamp in `txlist` (address overview style alignment)."
         />
         <Metric
           name="Bridge volume (USD)"
@@ -148,15 +148,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Total tx (explorer-style)"
-          explanation="Raw row count from HyperEVM explorer endpoints: `txlist` + `tokentx` + `txlistinternal` (no app-side dedup/filtering), all scanned from block 0 to latest block."
-        />
-        <Metric
-          name="Account tx / Token tx / Internal tx"
-          explanation="Breakdown of the explorer-style total by source endpoint: `txlist`, `tokentx`, and `txlistinternal`."
-        />
-        <Metric
-          name="Outgoing / Incoming / Successful / Failed account tx"
-          explanation="Additional account-level breakdown: outgoing and incoming are deduplicated wallet-direction counts from parsed `txlist`; successful/failed are raw `txlist` status counts (`txreceipt_status` / `isError`)."
+          explanation="Aligned to explorer address overview style: total count from `txlist` rows for the wallet."
         />
         <Metric
           name="Initiated tx (wallet actions)"
