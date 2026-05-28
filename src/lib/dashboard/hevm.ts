@@ -487,68 +487,88 @@ const fetchExplorerAction = async (
   const rows: ExplorerRow[] = [];
   let requestsUsed = 0;
   let truncated = false;
-  let cursorStart = Math.max(0, Math.floor(startBlock));
-  const cursorEnd = Math.max(cursorStart, Math.floor(endBlock));
+  const rootStart = Math.max(0, Math.floor(startBlock));
+  const rootEnd = Math.max(rootStart, Math.floor(endBlock));
+  const MAX_API_ROWS_PER_RANGE = 10000;
+  const MAX_PAGES_PER_RANGE = Math.max(1, Math.floor(MAX_API_ROWS_PER_RANGE / Math.max(1, offset)));
 
-  while (cursorStart <= cursorEnd) {
-    const params = new URLSearchParams({
-      chain_id: String(HYPEREVM_CHAIN_ID),
-      module: "account",
-      action,
-      address,
-      startblock: String(cursorStart),
-      endblock: String(cursorEnd),
-      page: "1",
-      offset: String(offset),
-      sort: "asc",
-    });
+  const fetchRange = async (rangeStart: number, rangeEnd: number): Promise<void> => {
+    if (rangeStart > rangeEnd) return;
+    const startLen = rows.length;
+    let page = 1;
+    let hitPageCap = false;
 
-    const response = await fetch(`${HYPERSCAN_API_URL}?${params.toString()}`, {
-      method: "GET",
-      cache: "no-store",
-    });
-    requestsUsed += 1;
+    while (page <= MAX_PAGES_PER_RANGE) {
+      const params = new URLSearchParams({
+        chain_id: String(HYPEREVM_CHAIN_ID),
+        module: "account",
+        action,
+        address,
+        startblock: String(rangeStart),
+        endblock: String(rangeEnd),
+        page: String(page),
+        offset: String(offset),
+        sort: "asc",
+      });
 
-    const payload = await readResponseJson(response);
-    if (!response.ok) {
-      const message =
-        isObjectRecord(payload) && typeof payload.message === "string"
-          ? payload.message
-          : `Explorer request failed (${response.status})`;
-      throw new Error(message);
-    }
+      const response = await fetch(`${HYPERSCAN_API_URL}?${params.toString()}`, {
+        method: "GET",
+        cache: "no-store",
+      });
+      requestsUsed += 1;
 
-    if (!isObjectRecord(payload)) {
-      throw new Error(`Unexpected explorer payload for ${action}.`);
-    }
-
-    const message = readStringKeys(payload, ["message"]).trim();
-    if (NO_TX_MESSAGES.has(message)) break;
-
-    const status = readStringKeys(payload, ["status"]).trim();
-    const resultRaw = payload.result;
-    if (!Array.isArray(resultRaw)) {
-      if (status === "0" && !message) {
-        truncated = true;
-        break;
+      const payload = await readResponseJson(response);
+      if (!response.ok) {
+        const message =
+          isObjectRecord(payload) && typeof payload.message === "string"
+            ? payload.message
+            : `Explorer request failed (${response.status})`;
+        throw new Error(message);
       }
-      throw new Error(`Unexpected explorer result for ${action}.`);
+
+      if (!isObjectRecord(payload)) {
+        throw new Error(`Unexpected explorer payload for ${action}.`);
+      }
+
+      const message = readStringKeys(payload, ["message"]).trim();
+      if (NO_TX_MESSAGES.has(message)) return;
+
+      const status = readStringKeys(payload, ["status"]).trim();
+      const resultRaw = payload.result;
+      if (!Array.isArray(resultRaw)) {
+        if (status === "0" && !message) return;
+        throw new Error(`Unexpected explorer result for ${action}.`);
+      }
+
+      const pageRows = resultRaw.filter((item) => isObjectRecord(item)) as ExplorerRow[];
+      if (pageRows.length === 0) return;
+      rows.push(...pageRows);
+
+      if (pageRows.length < offset) return;
+      page += 1;
     }
 
-    const pageRows = resultRaw.filter((item) => isObjectRecord(item)) as ExplorerRow[];
-    if (pageRows.length === 0) break;
-    rows.push(...pageRows);
+    hitPageCap = true;
 
-    if (pageRows.length < offset) break;
-
-    const last = pageRows[pageRows.length - 1];
-    const lastBlock = readBlockNumber(last);
-    if (lastBlock <= cursorStart) {
+    if (!hitPageCap) return;
+    if (rangeStart >= rangeEnd) {
       truncated = true;
-      break;
+      return;
     }
-    cursorStart = lastBlock + 1;
-  }
+
+    const mid = Math.floor((rangeStart + rangeEnd) / 2);
+    if (mid <= rangeStart || mid >= rangeEnd) {
+      truncated = true;
+      return;
+    }
+
+    // Discard partial rows collected on this range and rebuild from split children only.
+    rows.length = startLen;
+    await fetchRange(rangeStart, mid);
+    await fetchRange(mid + 1, rangeEnd);
+  };
+
+  await fetchRange(rootStart, rootEnd);
 
   return { rows, requestsUsed, truncated };
 };
