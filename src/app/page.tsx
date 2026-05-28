@@ -52,6 +52,7 @@ type HevmData = {
     bridgeVolume: number;
     totalTxCount: number;
     initiatedTxCount: number;
+    dedupedTxCount: number;
     charts: {
       volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
       twab: Record<"day" | "week" | "month" | "year", Array<{ period: string; twab: number }>>;

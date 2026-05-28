@@ -148,7 +148,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Total tx (explorer-style)"
-          explanation="Count of deduplicated HEVM rows across account tx (`txlist`, sent+received), token transfers (`tokentx`, sent+received), and internal tx (`txlistinternal`)."
+          explanation="Raw row count from HyperEVM explorer endpoints: `txlist` + `tokentx` + `txlistinternal` (no app-side dedup/filtering). This is intended to match explorer-style totals."
         />
         <Metric
           name="Initiated tx (wallet actions)"

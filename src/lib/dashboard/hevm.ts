@@ -37,6 +37,7 @@ type HevmComputed = {
   bridgeVolume: number;
   totalTxCount: number;
   initiatedTxCount: number;
+  dedupedTxCount: number;
   firstTxTime: number | null;
   charts: {
     volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
@@ -1167,6 +1168,8 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
 
   const tokenTxs = parseTokenTxs(tokenTxResult.rows);
   const internalTxs = parseInternalTxs(internalTxResult.rows);
+  const rawExplorerTxCount =
+    normalTxResult.rows.length + tokenTxResult.rows.length + internalTxResult.rows.length;
 
   const target = normalizeAddress(address);
   const sentAccountTxs = normalTxs.filter((tx) => tx.from === target && tx.from !== tx.to);
@@ -1250,13 +1253,14 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     activeMonths: uniqueActivity.uniqueMonths,
     sinceFirstTx: firstTxTimeSec ? ageFromTimestamp(firstTxTimeSec * 1000) : { days: 0, months: 0, years: 0 },
     bridgeVolume: bridgeVolumeUsd,
-    totalTxCount:
+    totalTxCount: rawExplorerTxCount,
+    initiatedTxCount: dedupedSentAccountTxs.length,
+    dedupedTxCount:
       dedupedSentAccountTxs.length +
       dedupedReceivedAccountTxs.length +
       dedupedSentTokenTxs.length +
       dedupedReceivedTokenTxs.length +
       dedupedInternalTxs.length,
-    initiatedTxCount: dedupedSentAccountTxs.length,
     firstTxTime: firstTxTimeSec ? firstTxTimeSec * 1000 : null,
     charts: {
       volume: hevmVolumeSeries,
@@ -1274,6 +1278,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     "HEVM TWAB is computed from reconstructed transferable balances with conservative historical pricing; unpriced assets are excluded from valuation."
   );
   warnings.push("HEVM metrics are now computed from HyperEVM explorer account transactions (txlist/tokentx/internal).");
+  warnings.push("Total tx is now raw explorer rows (txlist + tokentx + txlistinternal), while Initiated tx remains wallet-sent account tx only.");
   warnings.push(
     "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
   );
