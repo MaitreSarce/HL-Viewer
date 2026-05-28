@@ -967,6 +967,31 @@ const parseHtmlNumber = (raw: string) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+type ScrapedTxRow = {
+  hash: string;
+  timeSec: number | null;
+  feeNative: number | null;
+};
+
+const parseHyperevmTxRows = (html: string): ScrapedTxRow[] => {
+  const rows: ScrapedTxRow[] = [];
+  const rowMatches = html.matchAll(/<tr>[\s\S]*?<\/tr>/gi);
+  for (const rowMatch of rowMatches) {
+    const rowHtml = rowMatch[0] ?? "";
+    const hashMatch = rowHtml.match(/href="\/tx\/(0x[a-fA-F0-9]{64})"/i);
+    if (!hashMatch?.[1]) continue;
+    const hash = hashMatch[1].toLowerCase();
+    const tsMatch = rowHtml.match(/class='showLocalDate'[\s\S]*?>(\d{10})</i);
+    const feeMatch = rowHtml.match(/class='small text-muted showTxnFee [^']*'>([\s\S]*?)<\/td>/i);
+    rows.push({
+      hash,
+      timeSec: tsMatch?.[1] ? Number(tsMatch[1]) : null,
+      feeNative: feeMatch?.[1] ? parseHtmlNumber(feeMatch[1]) : null,
+    });
+  }
+  return rows;
+};
+
 const readHyperevmScanTxMetrics = async (address: string) => {
   const normalized = normalizeAddress(address);
   if (!normalized) {
@@ -988,11 +1013,16 @@ const readHyperevmScanTxMetrics = async (address: string) => {
       const pageMatch = html.match(/Page\s+1\s+of\s+([\d,]+)/i);
       const totalPages = pageMatch?.[1] ? Number(pageMatch[1].replace(/,/g, "")) : 1;
       const lastPage = Number.isFinite(totalPages) && totalPages > 1 ? totalPages : 1;
-      const lastResp = lastPage === 1 ? baseResp : await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&p=${lastPage}`, { cache: "no-store" });
+      const lastResp =
+        lastPage === 1
+          ? baseResp
+          : await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&p=${lastPage}`, { cache: "no-store" });
       if (lastResp.ok) {
         const lastHtml = lastPage === 1 ? html : await lastResp.text();
-        const tsMatches = [...lastHtml.matchAll(/class='showLocalDate'[^>]*>[\s\S]*?>(\d{10})</g)];
-        const ts = tsMatches.map((m) => Number(m[1])).filter((v) => Number.isFinite(v) && v > 1_500_000_000 && v < 3_000_000_000);
+        const parsedRows = parseHyperevmTxRows(lastHtml);
+        const ts = parsedRows
+          .map((row) => row.timeSec ?? 0)
+          .filter((v) => Number.isFinite(v) && v > 1_500_000_000 && v < 3_000_000_000);
         if (ts.length > 0) firstTxTimeSec = Math.min(...ts);
       }
     }
@@ -1008,19 +1038,21 @@ const readHyperevmScanTxMetrics = async (address: string) => {
       const outTotalPages = outPageMatch?.[1] ? Number(outPageMatch[1].replace(/,/g, "")) : 1;
       const pages = Math.max(1, Number.isFinite(outTotalPages) ? outTotalPages : 1);
       const cappedPages = Math.min(pages, maxPages);
-      let feeSum = 0;
+      const byHash = new Map<string, number>();
       for (let p = 1; p <= cappedPages; p += 1) {
         const pageHtml =
           p === 1
             ? outHtml
             : await (await fetch(`${HYPEREVMSCAN_WEB_URL}/txs?a=${normalized}&f=2&p=${p}`, { cache: "no-store" })).text();
-        const feeMatches = [...pageHtml.matchAll(/class='small text-muted showTxnFee [^']*'>([\s\S]*?)<\/td>/g)];
-        for (const m of feeMatches) {
-          feeSum += parseHtmlNumber(m[1] ?? "");
+        const parsedRows = parseHyperevmTxRows(pageHtml);
+        for (const row of parsedRows) {
+          if (!row.hash) continue;
+          if (row.feeNative === null || row.feeNative <= 0) continue;
+          if (!byHash.has(row.hash)) byHash.set(row.hash, row.feeNative);
         }
       }
       if (pages > cappedPages) truncated = true;
-      outgoingFeeNative = feeSum;
+      outgoingFeeNative = [...byHash.values()].reduce((sum, value) => sum + value, 0);
     }
   } catch {
     // best effort
