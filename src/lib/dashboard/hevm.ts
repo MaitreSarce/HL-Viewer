@@ -1548,20 +1548,15 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const twabValue = computeTwabUsdFromValuePoints(twabTrace.points, endTime / 1000);
   const hevmTwabSeries = computeHevmTwabSeriesUsd(twabTrace.points, endTime / 1000);
 
-  const firstTxCandidates = normalTxResult.rows
-    .map((row) => readTimeSec(row))
+  const firstTxCandidates = normalTxsIncludingFailed
+    .map((tx) => tx.timeSec)
     .filter((timeSec) => Number.isFinite(timeSec) && timeSec > 0);
   let firstTxTimeSec = firstTxCandidates.length > 0 ? Math.min(...firstTxCandidates) : null;
   let totalTxCount = normalTxResult.rows.length;
   const explorerSummary = await readHyperevmScanAddressSummary(address);
   if (explorerSummary.totalTxCount !== null) totalTxCount = explorerSummary.totalTxCount;
   const scrapedTxMetrics = await readHyperevmScanTxMetrics(address, priceContext.nativeSeries);
-  if (explorerSummary.totalTxCount !== null) {
-    totalTxCount = explorerSummary.totalTxCount;
-  } else if (scrapedTxMetrics.totalTxCount !== null) {
-    totalTxCount = scrapedTxMetrics.totalTxCount;
-  }
-  if (scrapedTxMetrics.firstTxTimeSec !== null) firstTxTimeSec = scrapedTxMetrics.firstTxTimeSec;
+  if (scrapedTxMetrics.totalTxCount !== null) totalTxCount = scrapedTxMetrics.totalTxCount;
   if (scrapedTxMetrics.truncated) truncated = true;
   const currentHypeUsd = await fetchCurrentHypeUsd();
   const feeUsdRate = currentHypeUsd > 0 ? currentHypeUsd : latestNativeUsd;
@@ -1576,12 +1571,8 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     twab: twabValue,
     volume: volumeUsd,
     feesPaid: (() => {
-      if (
-        scrapedTxMetrics.outgoingFeeNative !== null &&
-        scrapedTxMetrics.outgoingFeeNative > 0 &&
-        feeUsdRate > 0
-      ) {
-        return scrapedTxMetrics.outgoingFeeNative * feeUsdRate;
+      if (hevmFeesPaidNative > 0 && feeUsdRate > 0) {
+        return hevmFeesPaidNative * feeUsdRate;
       }
       if (v2TxlistResult.rows.length === 0) return hevmFeesPaidUsd;
       const v2ParsedAll = parseAccountTxs(v2TxlistResult.rows, { includeFailed: true });
@@ -1614,15 +1605,13 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     "HEVM TWAB is computed from reconstructed transferable balances with conservative historical pricing; unpriced assets are excluded from valuation."
   );
   warnings.push("HEVM metrics are now computed from HyperEVM explorer account transactions (txlist/tokentx/internal).");
-  warnings.push("Total tx and wallet age now use HyperevmScan page-derived values when available (address + tx list pages), with API fallback.");
+  warnings.push("Total tx uses HyperevmScan tx list total; wallet age uses earliest txlist timestamp including failed tx.");
   if (v2TxlistResult.rows.length > 0) {
     warnings.push("Total tx / wallet age / fees are aligned using Etherscan V2 txlist (chainid=999) when ETHERSCAN_API_KEY is configured.");
   } else {
     warnings.push("ETHERSCAN_API_KEY not configured or V2 unavailable; explorer-page/API fallback was used for total tx / wallet age / fees.");
   }
-  if (scrapedTxMetrics.outgoingFeeNative !== null) {
-    warnings.push("Fees paid is aligned from HyperevmScan tx pages (`/txs`) by summing displayed Txn Fee values across all pages and converting with current HYPE/USD.");
-  }
+  warnings.push("Fees paid is computed from txlist gas costs (`gasUsed * gasPrice`) on outgoing tx, including failed tx, converted with current HYPE/USD.");
   warnings.push(
     "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
   );
