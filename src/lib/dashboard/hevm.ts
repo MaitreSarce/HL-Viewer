@@ -41,6 +41,10 @@ type HevmComputed = {
   accountTxCount: number;
   tokenTxCount: number;
   internalTxCount: number;
+  outgoingAccountTxCount: number;
+  incomingAccountTxCount: number;
+  successfulAccountTxCount: number;
+  failedAccountTxCount: number;
   firstTxTime: number | null;
   charts: {
     volume: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number }>>;
@@ -586,6 +590,22 @@ const parseAccountTxs = (rows: ExplorerRow[], options?: { includeFailed?: boolea
     });
   }
   return parsed;
+};
+
+const countFailedAccountTxRows = (rows: ExplorerRow[]) => {
+  let failed = 0;
+  for (const row of rows) {
+    const receiptStatus = readStringKeys(row, ["txreceipt_status"]).trim();
+    const isError = readStringKeys(row, ["isError"]).trim();
+    if (receiptStatus && receiptStatus !== "1") {
+      failed += 1;
+      continue;
+    }
+    if (!receiptStatus && isError && isError !== "0") {
+      failed += 1;
+    }
+  }
+  return failed;
 };
 
 const parseTokenTxs = (rows: ExplorerRow[]): TokenTx[] => {
@@ -1176,6 +1196,8 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const internalTxs = parseInternalTxs(internalTxResult.rows);
   const rawExplorerTxCount =
     normalTxResult.rows.length + tokenTxResult.rows.length + internalTxResult.rows.length;
+  const failedAccountTxCount = countFailedAccountTxRows(normalTxResult.rows);
+  const successfulAccountTxCount = Math.max(0, normalTxResult.rows.length - failedAccountTxCount);
 
   const target = normalizeAddress(address);
   const sentAccountTxs = normalTxs.filter((tx) => tx.from === target && tx.from !== tx.to);
@@ -1245,14 +1267,10 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const twabValue = computeTwabUsdFromValuePoints(twabTrace.points, endTime / 1000);
   const hevmTwabSeries = computeHevmTwabSeriesUsd(twabTrace.points, endTime / 1000);
 
-  let firstTxTimeSec: number | null = null;
-  if (normalTxs.length > 0) {
-    firstTxTimeSec = Math.min(...normalTxs.map((tx) => tx.timeSec));
-  } else if (tokenTxs.length > 0) {
-    firstTxTimeSec = Math.min(...tokenTxs.map((tx) => tx.timeSec));
-  } else if (internalTxs.length > 0) {
-    firstTxTimeSec = Math.min(...internalTxs.map((tx) => tx.timeSec));
-  }
+  const firstTxCandidates = [...normalTxResult.rows, ...tokenTxResult.rows, ...internalTxResult.rows]
+    .map((row) => readTimeSec(row))
+    .filter((timeSec) => Number.isFinite(timeSec) && timeSec > 0);
+  const firstTxTimeSec = firstTxCandidates.length > 0 ? Math.min(...firstTxCandidates) : null;
 
   const stats: HevmComputed = {
     twab: twabValue,
@@ -1274,6 +1292,10 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     accountTxCount: normalTxResult.rows.length,
     tokenTxCount: tokenTxResult.rows.length,
     internalTxCount: internalTxResult.rows.length,
+    outgoingAccountTxCount: dedupedSentAccountTxs.length,
+    incomingAccountTxCount: dedupedReceivedAccountTxs.length,
+    successfulAccountTxCount,
+    failedAccountTxCount,
     firstTxTime: firstTxTimeSec ? firstTxTimeSec * 1000 : null,
     charts: {
       volume: hevmVolumeSeries,
@@ -1292,6 +1314,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   );
   warnings.push("HEVM metrics are now computed from HyperEVM explorer account transactions (txlist/tokentx/internal).");
   warnings.push("Total tx is now raw explorer rows (txlist + tokentx + txlistinternal), while Initiated tx remains wallet-sent account tx only.");
+  warnings.push("Wallet age uses the earliest raw explorer timestamp across txlist/tokentx/txlistinternal.");
   warnings.push(
     "Volume now uses historical USD prices at transfer time (CoinGecko) for HYPE and indexed HyperEVM tokens."
   );
