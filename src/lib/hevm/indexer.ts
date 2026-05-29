@@ -2,14 +2,28 @@ import { normalizeAddress, readStringKeys, toFiniteNumber } from "@/lib/dashboar
 import { HevmIndexerResult, RawActivity } from "@/lib/hevm/types";
 
 const HYPERSCAN_API_URL = "https://www.hyperscan.com/api";
+const ETHERSCAN_V2_API_URL = "https://api.etherscan.io/v2/api";
 const HYPEREVM_RPC_URL = "https://rpc.hyperliquid.xyz/evm";
 const CHAIN_ID = 999;
 const BRIDGE_SYSTEM_ADDRESS = "0x2222222222222222222222222222222222222222";
-const ERC20_TRANSFER_TOPIC_PREFIX = "0xddf252ad";
-const FETCH_TIMEOUT_MS = 3500;
+const FETCH_TIMEOUT_MS = 15000;
+const ACTION_OFFSET = 10000;
+const ACTION_MAX_PAGES = 1000;
+const ACTION_MAX_ROWS = 220000;
+const DEFAULT_ETHERSCAN_FALLBACK_KEYS = [
+  "M6Y2NY3ABTV3T4BPNMYZ9X2TP2MAYJTK21",
+  "N5D34IBKDQIKPK4EEY32ZI3GRGNS6GRDSX",
+];
 
-type ExplorerAction = "txlist" | "tokentx" | "txlistinternal" | "logs";
+type ExplorerAction = "txlist" | "tokentx" | "txlistinternal";
 type ExplorerRow = Record<string, unknown>;
+
+type ExplorerProvider = {
+  id: "etherscan_v2" | "hyperscan";
+  baseUrl: string;
+  chainParam: "chainid" | "chain_id" | null;
+  apiKeys?: string[];
+};
 
 const isObject = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === "object";
 
@@ -20,12 +34,6 @@ const readTime = (row: Record<string, unknown>) =>
 
 const readBlock = (row: Record<string, unknown>) =>
   toInt(row.blockNumber ?? row.block_number ?? 0);
-
-const toHexInt = (hex: string) => {
-  if (!hex || typeof hex !== "string") return 0;
-  const n = Number.parseInt(hex, 16);
-  return Number.isFinite(n) ? n : 0;
-};
 
 const normalizeTxHash = (value: string) => value.trim().toLowerCase();
 
@@ -56,27 +64,22 @@ const rawToFloat = (raw: string | number | undefined, decimals = 18) => {
   return Number.isFinite(value) ? value : 0;
 };
 
-const hexToDecString = (hexValue: string) => {
-  const stripped = String(hexValue || "0x0").replace(/^0x/, "");
-  if (!/^[0-9a-fA-F]*$/.test(stripped) || stripped.length === 0) return "0";
-  try {
-    return BigInt(`0x${stripped}`).toString();
-  } catch {
-    return "0";
-  }
-};
-
 const readGasFeeNative = (row: Record<string, unknown>) => {
   const gasUsed = toFiniteNumber(row.gasUsed ?? row.cumulativeGasUsed ?? 0);
   const gasPrice = toFiniteNumber(row.gasPrice ?? row.effectiveGasPrice ?? 0);
-  if (!Number.isFinite(gasUsed) || !Number.isFinite(gasPrice) || gasUsed <= 0 || gasPrice <= 0) return 0;
-  return (gasUsed * gasPrice) / 1e18;
-};
-
-const parseTopicAddress = (topic: string) => {
-  const normalized = String(topic || "").toLowerCase().replace(/^0x/, "");
-  if (normalized.length < 40) return "";
-  return normalizeAddress(`0x${normalized.slice(-40)}`);
+  const l1FeesPaid = toFiniteNumber(
+    row.L1FeesPaid ??
+      row.l1FeesPaid ??
+      row.l1Fee ??
+      row.l1_fee ??
+      0
+  );
+  if (!Number.isFinite(gasUsed) || !Number.isFinite(gasPrice) || gasUsed <= 0 || gasPrice <= 0) {
+    return 0;
+  }
+  const l2Fee = gasUsed * gasPrice;
+  const totalWei = l2Fee + (Number.isFinite(l1FeesPaid) && l1FeesPaid > 0 ? l1FeesPaid : 0);
+  return totalWei / 1e18;
 };
 
 const isBridgeSystemAddress = (value?: string) => {
@@ -120,53 +123,10 @@ const jsonRpc = async (method: string, params: unknown[]) => {
   }
 };
 
-const fetchExplorerAction = async (action: ExplorerAction, address: string) => {
-  const rows: ExplorerRow[] = [];
-  const warnings: string[] = [];
-  const errors: Array<{ stage: string; message: string }> = [];
-  const offset = 1000;
-  const maxPages = 300;
-  const maxRows = 120000;
-
-  for (let page = 1; page <= maxPages; page += 1) {
-    const params = new URLSearchParams({
-      chain_id: String(CHAIN_ID),
-      module: "account",
-      action,
-      address,
-      startblock: "0",
-      endblock: "99999999",
-      page: String(page),
-      offset: String(offset),
-      sort: "asc",
-    });
-
-    const payload = await safeFetchJson(`${HYPERSCAN_API_URL}?${params.toString()}`);
-    if (!payload || typeof payload !== "object") break;
-
-    const result = (payload as Record<string, unknown>).result;
-    if (typeof result === "string") {
-      const msg = result.toLowerCase();
-      if (msg.includes("no transactions")) break;
-      warnings.push(`Hyperscan ${action}: ${result}`);
-      break;
-    }
-
-    if (!Array.isArray(result)) break;
-    const pageRows = result.filter(isObject) as ExplorerRow[];
-    rows.push(...pageRows);
-    if (rows.length >= maxRows) {
-      warnings.push(`Hyperscan ${action} capped at ${maxRows} rows for runtime safety.`);
-      break;
-    }
-    if (pageRows.length < offset) break;
-  }
-
-  if (rows.length === 0 && action === "logs") {
-    warnings.push("Hyperscan logs endpoint returned no rows; relying on tx receipts.");
-  }
-
-  return { rows, warnings, errors };
+const toHexInt = (hex: string) => {
+  if (!hex || typeof hex !== "string") return 0;
+  const n = Number.parseInt(hex, 16);
+  return Number.isFinite(n) ? n : 0;
 };
 
 const dedupeActivities = (items: RawActivity[]) => {
@@ -181,21 +141,200 @@ const dedupeActivities = (items: RawActivity[]) => {
       item.amountRaw ?? "",
       item.direction ?? "",
       item.token ?? "",
+      item.from ?? "",
+      item.to ?? "",
     ].join("|");
     if (!byKey.has(key)) byKey.set(key, item);
   }
-  return [...byKey.values()].sort((a, b) => (a.timestamp - b.timestamp) || (a.blockNumber - b.blockNumber));
+  return [...byKey.values()].sort(
+    (a, b) => (a.timestamp - b.timestamp) || (a.blockNumber - b.blockNumber)
+  );
+};
+
+const getExplorerProviders = (): ExplorerProvider[] => {
+  const envPrimaryKey = String(process.env.ETHERSCAN_API_KEY ?? "").trim();
+  const envKeyList = String(process.env.ETHERSCAN_API_KEYS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const apiKeys = [
+    ...new Set([envPrimaryKey, ...envKeyList, ...DEFAULT_ETHERSCAN_FALLBACK_KEYS].filter(Boolean)),
+  ];
+
+  const providers: ExplorerProvider[] = [];
+  if (apiKeys.length > 0) {
+    providers.push({
+      id: "etherscan_v2",
+      baseUrl: ETHERSCAN_V2_API_URL,
+      chainParam: "chainid",
+      apiKeys,
+    });
+  }
+  providers.push({
+    id: "hyperscan",
+    baseUrl: HYPERSCAN_API_URL,
+    chainParam: "chain_id",
+  });
+  return providers;
+};
+
+const fetchActionFromProvider = async (
+  provider: ExplorerProvider,
+  action: ExplorerAction,
+  address: string
+) => {
+  const rows: ExplorerRow[] = [];
+  const warnings: string[] = [];
+  const errors: Array<{ stage: string; message: string }> = [];
+  let startBlock = 0;
+  const keyCandidates = provider.apiKeys && provider.apiKeys.length > 0 ? provider.apiKeys : [undefined];
+  let keyIndex = 0;
+  let temporaryUnavailableRetries = 2;
+  let noPayloadRetries = 4;
+
+  for (let pageNo = 0; pageNo < ACTION_MAX_PAGES; pageNo += 1) {
+    const activeKey = keyCandidates[keyIndex % keyCandidates.length];
+    const params = new URLSearchParams({
+      module: "account",
+      action,
+      address,
+      startblock: String(startBlock),
+      endblock: "99999999",
+      page: "1",
+      offset: String(ACTION_OFFSET),
+      sort: "asc",
+    });
+    if (provider.chainParam) params.set(provider.chainParam, String(CHAIN_ID));
+    if (activeKey) params.set("apikey", activeKey);
+
+    const payload = await safeFetchJson(`${provider.baseUrl}?${params.toString()}`);
+    if (!payload || !isObject(payload)) {
+      if (noPayloadRetries > 0) {
+        noPayloadRetries -= 1;
+        if (keyCandidates.length > 1) keyIndex += 1;
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        pageNo -= 1;
+        continue;
+      }
+      errors.push({
+        stage: `${provider.id}:${action}`,
+        message: "No response payload from explorer endpoint.",
+      });
+      break;
+    }
+    noPayloadRetries = 4;
+
+    const status = String((payload as Record<string, unknown>).status ?? "");
+    const message = String((payload as Record<string, unknown>).message ?? "");
+    const result = (payload as Record<string, unknown>).result;
+
+    if (typeof result === "string") {
+      const msg = result.toLowerCase();
+      if (msg.includes("no transactions")) break;
+      const invalidKey =
+        msg.includes("invalid api key") ||
+        msg.includes("missing/invalid api key") ||
+        msg.includes("#err2") ||
+        msg.includes("too many invalid api key attempts");
+      if (invalidKey && keyCandidates.length > 1) {
+        keyIndex += 1;
+        continue;
+      }
+      if (invalidKey) {
+        errors.push({
+          stage: `${provider.id}:${action}`,
+          message: "Invalid API key for Etherscan V2. Falling back.",
+        });
+        break;
+      }
+      if (msg.includes("rate limit") && keyCandidates.length > 1) {
+        keyIndex += 1;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        continue;
+      }
+      if (msg.includes("temporarily unavailable") && temporaryUnavailableRetries > 0) {
+        temporaryUnavailableRetries -= 1;
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        continue;
+      }
+      warnings.push(`${provider.id} ${action}: ${result}`);
+      break;
+    }
+
+    if (!Array.isArray(result)) {
+      if (status === "0" && message.toLowerCase().includes("no transactions")) break;
+      warnings.push(`${provider.id} ${action}: unexpected payload shape.`);
+      break;
+    }
+
+    const pageRows = result.filter(isObject) as ExplorerRow[];
+    if (pageRows.length === 0) break;
+
+    rows.push(...pageRows);
+    if (rows.length >= ACTION_MAX_ROWS) {
+      warnings.push(`${provider.id} ${action} capped at ${ACTION_MAX_ROWS} rows for runtime safety.`);
+      break;
+    }
+
+    if (pageRows.length < ACTION_OFFSET) break;
+    const lastBlock = readBlock(pageRows[pageRows.length - 1]);
+    if (lastBlock <= startBlock) break;
+    startBlock = lastBlock + 1;
+    if (provider.id === "etherscan_v2") {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+  }
+
+  return { rows, warnings, errors };
+};
+
+const fetchExplorerAction = async (action: ExplorerAction, address: string) => {
+  const providers = getExplorerProviders();
+  const mergedWarnings: string[] = [];
+  const mergedErrors: Array<{ stage: string; message: string }> = [];
+  let bestRows: ExplorerRow[] = [];
+  let bestSource = `hyperscan:${action}`;
+
+  for (const provider of providers) {
+    const result = await fetchActionFromProvider(provider, action, address);
+    mergedWarnings.push(...result.warnings);
+    mergedErrors.push(...result.errors);
+
+    if (result.rows.length > bestRows.length) {
+      bestRows = result.rows;
+      bestSource = `${provider.id}:${action}`;
+    }
+    if (result.rows.length > 0) break;
+  }
+
+  return {
+    rows: bestRows,
+    warnings: mergedWarnings,
+    errors: mergedErrors,
+    source: bestSource,
+  };
 };
 
 const enrichMissingTimestamps = async (activities: RawActivity[]) => {
-  const blockNumbers = [...new Set(activities.filter((a) => a.timestamp <= 0 && a.blockNumber > 0).map((a) => a.blockNumber))].slice(0, 320);
+  const blockNumbers = [
+    ...new Set(
+      activities
+        .filter((a) => a.timestamp <= 0 && a.blockNumber > 0)
+        .map((a) => a.blockNumber)
+    ),
+  ].slice(0, 320);
+  if (blockNumbers.length === 0) return false;
+
   const tsByBlock = new Map<number, number>();
   const concurrency = 10;
   for (let i = 0; i < blockNumbers.length; i += concurrency) {
     const chunk = blockNumbers.slice(i, i + concurrency);
     await Promise.all(
       chunk.map(async (blockNumber) => {
-        const result = await jsonRpc("eth_getBlockByNumber", [`0x${blockNumber.toString(16)}`, false]);
+        const result = await jsonRpc("eth_getBlockByNumber", [
+          `0x${blockNumber.toString(16)}`,
+          false,
+        ]);
         if (!result || typeof result !== "object") return;
         const blockTs = toHexInt(String((result as Record<string, unknown>).timestamp ?? "0x0"));
         if (blockTs > 0) tsByBlock.set(blockNumber, blockTs);
@@ -208,131 +347,7 @@ const enrichMissingTimestamps = async (activities: RawActivity[]) => {
     const blockTs = tsByBlock.get(activity.blockNumber);
     if (blockTs && blockTs > 0) activity.timestamp = blockTs;
   }
-};
-
-const addReceiptLogs = async (
-  wallet: string,
-  txHashes: string[],
-  out: RawActivity[],
-  errors: Array<{ stage: string; message: string }>
-) => {
-  const limit = 80;
-  const targets = txHashes.slice(0, limit);
-  const concurrency = 10;
-  for (let i = 0; i < targets.length; i += concurrency) {
-    const chunk = targets.slice(i, i + concurrency);
-    await Promise.all(chunk.map(async (txHash) => {
-    const receipt = await jsonRpc("eth_getTransactionReceipt", [txHash]);
-    if (!receipt || typeof receipt !== "object") return;
-    const logs = Array.isArray((receipt as Record<string, unknown>).logs)
-      ? ((receipt as Record<string, unknown>).logs as unknown[]).filter(isObject)
-      : [];
-
-    const blockNumber = toHexInt(String((receipt as Record<string, unknown>).blockNumber ?? "0x0"));
-    const transaction = await jsonRpc("eth_getTransactionByHash", [txHash]);
-    const txObj = isObject(transaction) ? transaction : null;
-    const from = normalizeAddress(String(txObj?.from ?? ""));
-    const to = normalizeAddress(String(txObj?.to ?? ""));
-    const methodId = readMethodId(txObj?.input);
-
-    for (const log of logs) {
-      const logIndex = toHexInt(String(log.logIndex ?? "0x0"));
-      const contractAddress = normalizeAddress(readStringKeys(log, ["address"]));
-      const topics = Array.isArray(log.topics) ? log.topics.map((x) => String(x).toLowerCase()) : [];
-      const data = String(log.data ?? "0x");
-
-      out.push({
-        txHash,
-        blockNumber,
-        timestamp: 0,
-        from,
-        to,
-        contractAddress,
-        type: "contract_log",
-        direction: direction(wallet, from, to),
-        methodId,
-        topics,
-        data,
-        source: "rpc_receipt_log",
-        logIndex,
-      });
-
-      const firstTopic = topics[0] || "";
-      if (firstTopic.startsWith(ERC20_TRANSFER_TOPIC_PREFIX) && topics.length >= 3) {
-        const transferFrom = parseTopicAddress(topics[1]);
-        const transferTo = parseTopicAddress(topics[2]);
-        const transferDirection = direction(wallet, transferFrom, transferTo);
-        if (transferDirection !== "unknown") {
-          const transferRaw = hexToDecString(data);
-          out.push({
-            txHash,
-            blockNumber,
-            timestamp: 0,
-            from: transferFrom,
-            to: transferTo,
-            contractAddress,
-            type: "erc20_transfer",
-            token: contractAddress,
-            amountRaw: transferRaw,
-            amount: rawToFloat(transferRaw, 18),
-            direction: transferDirection,
-            methodId,
-            topics,
-            data,
-            source: "rpc_receipt_log",
-            logIndex,
-          });
-
-          if (isBridgeSystemAddress(transferFrom) || isBridgeSystemAddress(transferTo) || isBridgeSystemAddress(contractAddress)) {
-            out.push({
-              txHash,
-              blockNumber,
-              timestamp: 0,
-              from: transferFrom,
-              to: transferTo,
-              contractAddress,
-              type: "bridge_event",
-              token: contractAddress,
-              amountRaw: transferRaw,
-              amount: rawToFloat(transferRaw, 18),
-              direction: transferDirection,
-              methodId,
-              topics,
-              data,
-              source: "rpc_receipt_log",
-              logIndex,
-            });
-          }
-        }
-      }
-
-      if (isBridgeSystemAddress(contractAddress) || isBridgeSystemAddress(from) || isBridgeSystemAddress(to)) {
-        out.push({
-          txHash,
-          blockNumber,
-          timestamp: 0,
-          from,
-          to,
-          contractAddress,
-          type: "bridge_event",
-          direction: direction(wallet, from, to),
-          methodId,
-          topics,
-          data,
-          source: "rpc_receipt_log",
-          logIndex,
-        });
-      }
-    }
-    }));
-  }
-
-  if (txHashes.length > limit) {
-    errors.push({
-      stage: "rpc_receipts",
-      message: `Receipt enrichment capped at ${limit} tx hashes (from ${txHashes.length}).`,
-    });
-  }
+  return tsByBlock.size > 0;
 };
 
 export const indexWalletActivity = async (walletAddress: string): Promise<HevmIndexerResult> => {
@@ -340,29 +355,23 @@ export const indexWalletActivity = async (walletAddress: string): Promise<HevmIn
   const out: RawActivity[] = [];
   const warnings: string[] = [];
   const errors: Array<{ stage: string; message: string }> = [];
-  const dataSourcesUsed = new Set<string>([
-    "hyperscan:txlist",
-    "hyperscan:tokentx",
-    "hyperscan:txlistinternal",
-    "rpc:eth_getTransactionReceipt",
-    "rpc:eth_getTransactionByHash",
-    "rpc:eth_getBlockByNumber",
-  ]);
+  const dataSourcesUsed = new Set<string>();
 
-  const [normalRes, tokenRes, internalRes, logsRes] = await Promise.all([
+  const [normalRes, tokenRes, internalRes] = await Promise.all([
     fetchExplorerAction("txlist", wallet),
     fetchExplorerAction("tokentx", wallet),
     fetchExplorerAction("txlistinternal", wallet),
-    fetchExplorerAction("logs", wallet),
   ]);
 
-  warnings.push(...normalRes.warnings, ...tokenRes.warnings, ...internalRes.warnings, ...logsRes.warnings);
-  errors.push(...normalRes.errors, ...tokenRes.errors, ...internalRes.errors, ...logsRes.errors);
+  dataSourcesUsed.add(normalRes.source);
+  dataSourcesUsed.add(tokenRes.source);
+  dataSourcesUsed.add(internalRes.source);
+  warnings.push(...normalRes.warnings, ...tokenRes.warnings, ...internalRes.warnings);
+  errors.push(...normalRes.errors, ...tokenRes.errors, ...internalRes.errors);
 
   const normalRows = normalRes.rows;
   const tokenRows = tokenRes.rows;
   const internalRows = internalRes.rows;
-  const logRows = logsRes.rows;
 
   for (const row of normalRows) {
     const txHash = normalizeTxHash(readStringKeys(row, ["hash", "transactionHash"]));
@@ -376,6 +385,9 @@ export const indexWalletActivity = async (walletAddress: string): Promise<HevmIn
     const amount = rawToFloat(amountRaw, 18);
     const methodId = readMethodId(row.input);
     const dir = direction(wallet, from, to);
+    const source = normalRes.source.startsWith("etherscan_v2")
+      ? "etherscan_v2_txlist"
+      : "hyperscan_txlist";
 
     out.push({
       txHash,
@@ -390,7 +402,7 @@ export const indexWalletActivity = async (walletAddress: string): Promise<HevmIn
       feeNative: readGasFeeNative(row),
       direction: dir,
       methodId,
-      source: "hyperscan_txlist",
+      source,
     });
 
     if (amount > 0) {
@@ -406,7 +418,7 @@ export const indexWalletActivity = async (walletAddress: string): Promise<HevmIn
         amount,
         direction: dir,
         methodId,
-        source: "hyperscan_txlist",
+        source,
       });
     }
 
@@ -423,7 +435,7 @@ export const indexWalletActivity = async (walletAddress: string): Promise<HevmIn
         amount,
         direction: dir,
         methodId,
-        source: "hyperscan_txlist",
+        source,
       });
     }
   }
@@ -431,6 +443,7 @@ export const indexWalletActivity = async (walletAddress: string): Promise<HevmIn
   for (const row of tokenRows) {
     const txHash = normalizeTxHash(readStringKeys(row, ["hash", "transactionHash"]));
     if (!txHash) continue;
+
     const from = normalizeAddress(readStringKeys(row, ["from"]));
     const to = normalizeAddress(readStringKeys(row, ["to"]));
     const tokenAddress = normalizeAddress(readStringKeys(row, ["contractAddress", "tokenAddress"]));
@@ -439,6 +452,11 @@ export const indexWalletActivity = async (walletAddress: string): Promise<HevmIn
     const amountRaw = String(row.value ?? "0");
     const amount = rawToFloat(amountRaw, decimals);
     const dir = direction(wallet, from, to);
+    const source = tokenRes.source.startsWith("etherscan_v2")
+      ? "etherscan_v2_tokentx"
+      : "hyperscan_tokentx";
+    const rawLogIndex = toFiniteNumber(row.logIndex);
+    const logIndex = Number.isFinite(rawLogIndex) ? Math.floor(rawLogIndex) : undefined;
 
     out.push({
       txHash,
@@ -452,8 +470,8 @@ export const indexWalletActivity = async (walletAddress: string): Promise<HevmIn
       amountRaw,
       amount,
       direction: dir,
-      logIndex: toInt(row.logIndex ?? row.transactionIndex ?? 0),
-      source: "hyperscan_tokentx",
+      logIndex,
+      source,
     });
 
     if (isBridgeSystemAddress(from) || isBridgeSystemAddress(to) || isBridgeSystemAddress(tokenAddress)) {
@@ -469,20 +487,24 @@ export const indexWalletActivity = async (walletAddress: string): Promise<HevmIn
         amountRaw,
         amount,
         direction: dir,
-        logIndex: toInt(row.logIndex ?? row.transactionIndex ?? 0),
-        source: "hyperscan_tokentx",
+        logIndex,
+        source,
       });
     }
   }
 
   for (const row of internalRows) {
-    const txHash = normalizeTxHash(readStringKeys(row, ["hash", "transactionHash"]));
+    const txHash = normalizeTxHash(readStringKeys(row, ["hash", "transactionHash", "transactionHash"]));
     if (!txHash) continue;
+
     const from = normalizeAddress(readStringKeys(row, ["from"]));
     const to = normalizeAddress(readStringKeys(row, ["to"]));
     const amountRaw = String(row.value ?? "0");
     const amount = rawToFloat(amountRaw, 18);
     const dir = direction(wallet, from, to);
+    const source = internalRes.source.startsWith("etherscan_v2")
+      ? "etherscan_v2_internal"
+      : "hyperscan_internal";
 
     out.push({
       txHash,
@@ -495,8 +517,8 @@ export const indexWalletActivity = async (walletAddress: string): Promise<HevmIn
       amountRaw,
       amount,
       direction: dir,
-      traceId: readStringKeys(row, ["traceId", "trace_id"]),
-      source: "hyperscan_internal",
+      traceId: readStringKeys(row, ["traceId", "trace_id", "index"]),
+      source,
     });
 
     if (isBridgeSystemAddress(from) || isBridgeSystemAddress(to)) {
@@ -511,41 +533,18 @@ export const indexWalletActivity = async (walletAddress: string): Promise<HevmIn
         amountRaw,
         amount,
         direction: dir,
-        traceId: readStringKeys(row, ["traceId", "trace_id"]),
-        source: "hyperscan_internal",
+        traceId: readStringKeys(row, ["traceId", "trace_id", "index"]),
+        source,
       });
     }
   }
 
-  for (const row of logRows) {
-    const txHash = normalizeTxHash(readStringKeys(row, ["hash", "transactionHash", "transactionHash"]));
-    if (!txHash) continue;
-    const contractAddress = normalizeAddress(readStringKeys(row, ["address", "contractAddress"]));
-    const logIndex = toInt(row.logIndex ?? 0);
-    out.push({
-      txHash,
-      blockNumber: readBlock(row),
-      timestamp: readTime(row),
-      contractAddress,
-      type: "contract_log",
-      direction: "unknown",
-      logIndex,
-      source: "rpc_getLogs",
-    });
-  }
+  const rpcBlocksUsed = await enrichMissingTimestamps(out);
+  if (rpcBlocksUsed) dataSourcesUsed.add("rpc:eth_getBlockByNumber");
 
-  const txHashes = [...new Set(out.map((x) => x.txHash).filter(Boolean))];
-  if (logRows.length === 0 && txHashes.length <= 1800) {
-    await addReceiptLogs(wallet, txHashes, out, errors);
-  } else {
-    warnings.push("Skipped tx receipt enrichment (explorer logs available or tx volume too high for runtime budget).");
-  }
-
-  await enrichMissingTimestamps(out);
   const activities = dedupeActivities(out).filter((a) => a.timestamp > 0);
-
   if (activities.length === 0) {
-    warnings.push("No HEVM activity detected from current indexer sources.");
+    warnings.push("No HEVM activity detected from explorer sources.");
   }
 
   return {

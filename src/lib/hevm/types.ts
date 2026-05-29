@@ -23,7 +23,15 @@ export type RawActivity = {
   methodId?: string;
   topics?: string[];
   data?: string;
-  source?: "hyperscan_txlist" | "hyperscan_tokentx" | "hyperscan_internal" | "rpc_receipt_log" | "rpc_getLogs";
+  source?:
+    | "etherscan_v2_txlist"
+    | "etherscan_v2_tokentx"
+    | "etherscan_v2_internal"
+    | "hyperscan_txlist"
+    | "hyperscan_tokentx"
+    | "hyperscan_internal"
+    | "rpc_receipt_log"
+    | "rpc_getLogs";
 };
 
 export type Protocol = {

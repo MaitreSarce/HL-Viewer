@@ -15,6 +15,10 @@ import { createPriceContext } from "@/lib/hevm/pricing";
 import { fetchProtocolRegistry } from "@/lib/hevm/protocolRegistry";
 import { ClassifiedActivity, HevmDashboardStats, RawActivity } from "@/lib/hevm/types";
 
+const HYPEREVMSCAN_ADDRESS_URL = "https://hyperevmscan.io/address";
+const HYPEREVMSCAN_TXS_URL = "https://hyperevmscan.io/txs";
+const FETCH_TIMEOUT_MS = 6000;
+
 const classifyActivities = (
   activities: RawActivity[],
   adapters: ReturnType<typeof buildAdapters>
@@ -43,6 +47,127 @@ const safe = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
   } catch {
     return fallback;
   }
+};
+
+const fetchExplorerTxTotal = async (wallet: string): Promise<number> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${HYPEREVMSCAN_ADDRESS_URL}/${wallet}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) return 0;
+    const html = await response.text();
+    const match = html.match(/Transactions:\s*([0-9,]+)/i);
+    if (!match) return 0;
+    const n = Number.parseInt(match[1].replace(/,/g, ""), 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const parseExplorerTxTotalFromHtml = (html: string) => {
+  const metaMatch = html.match(/Transactions:\s*([0-9,]+)/i);
+  if (metaMatch) {
+    const n = Number.parseInt(metaMatch[1].replace(/,/g, ""), 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  const tableMatch = html.match(/A total of\s*([0-9,]+)\s*transactions found/i);
+  if (tableMatch) {
+    const n = Number.parseInt(tableMatch[1].replace(/,/g, ""), 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+};
+
+const parseExplorerPageCount = (html: string) => {
+  const match = html.match(/Page\s+\d+\s+of\s+(\d+)/i);
+  if (!match) return 1;
+  const n = Number.parseInt(match[1], 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+};
+
+const parseExplorerMinTimestamp = (html: string) => {
+  const regex = /showLocalDate[^>]*>\s*<span[^>]*>(\d+)<\/span>/gi;
+  const values: number[] = [];
+  let m = regex.exec(html);
+  while (m) {
+    const ts = Number.parseInt(m[1], 10);
+    if (Number.isFinite(ts) && ts > 0) values.push(ts);
+    m = regex.exec(html);
+  }
+  if (values.length === 0) return 0;
+  return Math.min(...values);
+};
+
+const fetchExplorerTxPageHtml = async (wallet: string, page: number) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${HYPEREVMSCAN_TXS_URL}?a=${wallet}&p=${page}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) return "";
+    return await response.text();
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const fetchExplorerSnapshot = async (wallet: string) => {
+  const pageOneHtml = await fetchExplorerTxPageHtml(wallet, 1);
+  if (!pageOneHtml) {
+    return { totalTx: 0, firstSeenTimestamp: 0 };
+  }
+
+  const totalTx = parseExplorerTxTotalFromHtml(pageOneHtml);
+  const pageCount = parseExplorerPageCount(pageOneHtml);
+  let firstSeenTimestamp = parseExplorerMinTimestamp(pageOneHtml);
+
+  if (pageCount <= 1) {
+    return { totalTx, firstSeenTimestamp };
+  }
+
+  let left = 1;
+  let right = pageCount;
+  let lastNonEmptyPage = 1;
+  let lastNonEmptyMinTs = firstSeenTimestamp;
+  const pageCache = new Map<number, string>([[1, pageOneHtml]]);
+
+  while (left <= right) {
+    const mid = Math.floor((left + right) / 2);
+    const html = pageCache.get(mid) ?? await fetchExplorerTxPageHtml(wallet, mid);
+    if (!pageCache.has(mid) && html) pageCache.set(mid, html);
+    if (!html) {
+      right = mid - 1;
+      continue;
+    }
+    const minTs = parseExplorerMinTimestamp(html);
+    const hasRows = minTs > 0 && !/There are no matching entries/i.test(html);
+    if (hasRows) {
+      lastNonEmptyPage = mid;
+      lastNonEmptyMinTs = minTs;
+      left = mid + 1;
+    } else {
+      right = mid - 1;
+    }
+  }
+
+  if (lastNonEmptyPage > 1) {
+    const html = pageCache.get(lastNonEmptyPage) ?? await fetchExplorerTxPageHtml(wallet, lastNonEmptyPage);
+    const minTs = parseExplorerMinTimestamp(html);
+    if (minTs > 0) lastNonEmptyMinTs = minTs;
+  }
+
+  if (lastNonEmptyMinTs > 0) firstSeenTimestamp = lastNonEmptyMinTs;
+  return { totalTx, firstSeenTimestamp };
 };
 
 export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashboardStats> => {
@@ -101,9 +226,24 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
   const activePeriods = calculateActivePeriods(rawActivities);
   const walletAge = calculateWalletAge(rawActivities);
   const txCounts = calculateTxCounts(rawActivities, wallet);
+  const normalTxCount = new Set(
+    rawActivities.filter((activity) => activity.type === "normal_tx").map((activity) => activity.txHash)
+  ).size;
+  const explorerSnapshot = await safe(() => fetchExplorerSnapshot(wallet), { totalTx: 0, firstSeenTimestamp: 0 });
+  const explorerTotalTxCount = explorerSnapshot.totalTx;
+  const walletAgeWithExplorer =
+    explorerSnapshot.firstSeenTimestamp > 0 &&
+    (walletAge.firstSeenTimestamp <= 0 || explorerSnapshot.firstSeenTimestamp < walletAge.firstSeenTimestamp)
+      ? {
+          firstSeenTimestamp: explorerSnapshot.firstSeenTimestamp,
+          ageSeconds: Math.max(0, now - explorerSnapshot.firstSeenTimestamp),
+          ageDays: Math.floor(Math.max(0, now - explorerSnapshot.firstSeenTimestamp) / 86400),
+        }
+      : walletAge;
+  const hypeNow = await priceContext.resolvePriceUsd("HYPE", now);
   const feesPaidUsd = await calculateFeesPaidUsd(rawActivities, wallet, async (timestamp) => {
-    const price = await priceContext.resolvePriceUsd("HYPE", timestamp);
-    return price.priceUsd ?? 0;
+    void timestamp;
+    return hypeNow.priceUsd ?? 0;
   });
 
   const protocolClassification: Record<string, number> = {};
@@ -141,7 +281,7 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
   return {
     wallet,
     chainId: 999,
-    startTime: twab.startTime || walletAge.firstSeenTimestamp || now,
+    startTime: twab.startTime || walletAgeWithExplorer.firstSeenTimestamp || now,
     endTime: twab.endTime || now,
     twabUsd: twab.twabUsd,
     twabSegments: timeline.segments,
@@ -150,7 +290,7 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
     volume,
     contracts,
     activePeriods,
-    walletAge,
+    walletAge: walletAgeWithExplorer,
     bridge,
     txCounts,
     feesPaidUsd,
@@ -171,6 +311,8 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
         other: volume.otherContractVolumeUsd,
       },
       txCountBreakdown: {
+        explorerTotal: explorerTotalTxCount,
+        normal: normalTxCount,
         sent: txCounts.sentAccountTxCount,
         received: txCounts.receivedAccountTxCount,
         erc20: txCounts.erc20TransferCount,
@@ -191,4 +333,3 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
     },
   };
 };
-

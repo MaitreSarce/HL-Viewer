@@ -40,6 +40,7 @@ export const calculateVolumeUsd = async (
   activities: ClassifiedActivity[],
   resolver: (activity: ClassifiedActivity) => Promise<number>
 ) => {
+  const seen = new Set<string>();
   let totalVolumeUsd = 0;
   let swapVolumeUsd = 0;
   let bridgeVolumeUsd = 0;
@@ -48,7 +49,25 @@ export const calculateVolumeUsd = async (
   let transferVolumeUsd = 0;
   let otherContractVolumeUsd = 0;
 
-  for (const activity of activities) {
+  const sorted = [...activities].sort(
+    (a, b) => (a.timestamp - b.timestamp) || (a.blockNumber - b.blockNumber)
+  );
+
+  for (const activity of sorted) {
+    if (activity.type === "bridge_event") continue;
+    const dedupeKey = [
+      activity.txHash,
+      activity.type,
+      normalizeAddress(activity.from || ""),
+      normalizeAddress(activity.to || ""),
+      normalizeAddress(activity.contractAddress || ""),
+      activity.token || "",
+      activity.amountRaw || "",
+      activity.direction || "",
+    ].join("|");
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
     const amount = await resolver(activity);
     const usd = Number.isFinite(amount) ? Math.max(0, amount) : 0;
     totalVolumeUsd += usd;
@@ -132,11 +151,11 @@ export const calculateActivePeriods = (activities: RawActivity[]) => {
 
 export const calculateWalletAge = (activities: RawActivity[]) => {
   const now = Math.floor(Date.now() / 1000);
-  const firstSeenTimestamp =
-    activities
-      .map((a) => a.timestamp)
-      .filter((t) => Number.isFinite(t) && t > 0)
-      .sort((a, b) => a - b)[0] ?? now;
+  const validTs = activities
+    .map((a) => a.timestamp)
+    .filter((t) => Number.isFinite(t) && t > 0)
+    .sort((a, b) => a - b);
+  const firstSeenTimestamp = validTs[0] ?? now;
 
   const ageSeconds = Math.max(0, now - firstSeenTimestamp);
   const ageDays = Math.floor(ageSeconds / 86400);
@@ -183,16 +202,29 @@ export const calculateBridgeVolume = async (
   resolver: (activity: ClassifiedActivity) => Promise<number>
 ) => {
   const coreSystemAddress = "0x2222222222222222222222222222222222222222";
+  const seen = new Set<string>();
   let coreToEvmVolumeUsd = 0;
   let evmToCoreVolumeUsd = 0;
   let externalBridgeVolumeUsd = 0;
 
   for (const activity of activities) {
     if (activity.category !== "bridge") continue;
-    const value = await resolver(activity);
-    const usd = Number.isFinite(value) ? Math.max(0, value) : 0;
     const from = normalizeAddress(activity.from || "");
     const to = normalizeAddress(activity.to || activity.contractAddress || "");
+    const dedupeKey = [
+      activity.txHash,
+      from,
+      to,
+      normalizeAddress(activity.contractAddress || ""),
+      activity.token || "",
+      activity.amountRaw || "",
+      activity.direction || "",
+    ].join("|");
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    const value = await resolver(activity);
+    const usd = Number.isFinite(value) ? Math.max(0, value) : 0;
 
     if (from === coreSystemAddress || from.startsWith("0x20")) coreToEvmVolumeUsd += usd;
     else if (to === coreSystemAddress || to.startsWith("0x20")) evmToCoreVolumeUsd += usd;
@@ -227,4 +259,3 @@ export const calculateFeesPaidUsd = async (
 
   return feesPaidUsd;
 };
-

@@ -108,6 +108,18 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const stats = await buildHevmDashboardStats(address);
   const firstTsMs = stats.walletAge.firstSeenTimestamp > 0 ? stats.walletAge.firstSeenTimestamp * 1000 : null;
   const since = firstTsMs ? ageFromTimestamp(firstTsMs) : { days: 0, months: 0, years: 0 };
+  const explorerTotalFromDebug = Number(
+    (stats.debug as unknown as { txCountBreakdown?: { explorerTotal?: number } })?.txCountBreakdown?.explorerTotal ?? 0
+  );
+  const normalTxCountFromDebug = Number(
+    (stats.debug as unknown as { txCountBreakdown?: { normal?: number } })?.txCountBreakdown?.normal ?? 0
+  );
+  const explorerStyleTxCount =
+    explorerTotalFromDebug > 0
+      ? explorerTotalFromDebug
+      : normalTxCountFromDebug > 0
+        ? normalTxCountFromDebug
+        : stats.txCounts.allActivityTxCount;
 
   const segments = stats.twabSegments.map((s) => ({
     startTimestamp: s.startTimestamp,
@@ -129,7 +141,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
       activeMonths: stats.activePeriods.activeMonths,
       sinceFirstTx: since,
       bridgeVolume: stats.bridge.totalBridgeVolumeUsd,
-      totalTxCount: stats.txCounts.allActivityTxCount,
+      totalTxCount: explorerStyleTxCount,
       initiatedTxCount: stats.txCounts.sentAccountTxCount,
       firstTxTime: firstTsMs,
       charts: {
