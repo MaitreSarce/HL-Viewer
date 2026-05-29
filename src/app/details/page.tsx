@@ -116,7 +116,7 @@ export default function DetailsPage() {
 
         <Metric
           name="TWAB"
-          explanation="Computed with the same shared TWAB engine as Spot: exact-time integration `sum(valueUSD * duration) / totalDuration`. USD portfolio value is reconstructed event-by-event from HyperEVM flows (normal tx + token tx + internal tx) plus net USD locked in contract interactions (LP/lending proxy), then valued with historical token prices at each timestamp."
+          explanation="Computed as exact-time integration `sum(valueUSD * duration) / totalDuration`, rebuilt event-by-event from first activity to now. Portfolio value includes (1) wallet balances from transfer flows and (2) protocol-custody balances inferred from wallet↔protocol transfers. Protocol universe is sourced from DeFiLlama HyperEVM/Hyperliquid L1 protocols (plus detected protocol contracts), so TWAB includes funds parked in lending/vault/staking/DEX contracts when they remain on HEVM."
         />
         <Metric
           name="Volume (USD)"
@@ -141,10 +141,6 @@ export default function DetailsPage() {
         <Metric
           name="Since first tx (d/m/y)"
           explanation="Primary method: Etherscan V2 `txlist` (chainid 999) when `ETHERSCAN_API_KEY` is configured. Fallback method: HyperevmScan page parsing, then legacy API rows."
-        />
-        <Metric
-          name="Bridge volume (USD)"
-          explanation="Sum of incoming transfers where sender is in the known bridge sender list, valued with the same historical USD rules as HEVM volume."
         />
         <Metric
           name="Total tx (explorer-style)"

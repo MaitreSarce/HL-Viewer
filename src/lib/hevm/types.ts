@@ -14,6 +14,7 @@ export type RawActivity = {
     | "defi_event"
     | "bridge_event";
   token?: string;
+  tokenSymbol?: string;
   amountRaw?: string;
   amount?: number;
   feeNative?: number;

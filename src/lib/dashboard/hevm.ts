@@ -13,7 +13,6 @@ export type HevmApiResult = {
     activeDays: number;
     activeMonths: number;
     sinceFirstTx: { days: number; months: number; years: number };
-    bridgeVolume: number;
     totalTxCount: number;
     initiatedTxCount: number;
     firstTxTime: number | null;
@@ -140,7 +139,6 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
       activeDays: stats.activePeriods.activeDays,
       activeMonths: stats.activePeriods.activeMonths,
       sinceFirstTx: since,
-      bridgeVolume: stats.bridge.totalBridgeVolumeUsd,
       totalTxCount: explorerStyleTxCount,
       initiatedTxCount: stats.txCounts.sentAccountTxCount,
       firstTxTime: firstTsMs,
@@ -153,7 +151,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
       requestsUsed: 0,
       truncated: false,
       warnings: [
-        "HEVM module rebuilt with event-sourced pipeline (indexer/adapters/pricing/timeline/metrics).",
+        "HEVM TWAB uses event-by-event reconstruction with wallet balances + DeFiLlama protocol-custody balances on HEVM.",
         "Use HEVM debug panel to inspect tx/volume/price decomposition and confidence score.",
       ],
       debug: stats.debug as unknown as Record<string, unknown>,
