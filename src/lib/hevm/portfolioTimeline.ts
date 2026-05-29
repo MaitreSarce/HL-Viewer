@@ -24,6 +24,7 @@ const TRANSFER_TYPES = new Set<ClassifiedActivity["type"]>([
 ]);
 const STABLES = new Set(["USDC", "USDT", "DAI", "USD0", "USDH", "USDHL", "USDE", "USDT0", "FDUSD", "USDP", "FEUSD"]);
 const FALLBACK_CURRENT_MAX_AGE_SECONDS = 2 * 86400;
+const INCLUDE_PROTOCOL_CUSTODY_IN_TWAB = false;
 
 const isProtocolCategory = (
   category: ClassifiedActivity["category"] | HevmProtocolAdapter["category"]
@@ -198,6 +199,10 @@ const buildUsdPositions = async (
       timestamp,
       source: "wallet_balance",
     });
+  }
+
+  if (!INCLUDE_PROTOCOL_CUSTODY_IN_TWAB) {
+    return { positions, priceSources, totalUsd };
   }
 
   for (const row of protocolBalances.values()) {

@@ -151,7 +151,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
       requestsUsed: 0,
       truncated: false,
       warnings: [
-        "HEVM TWAB uses event-by-event reconstruction with wallet balances + DeFiLlama protocol-custody balances on HEVM.",
+        "HEVM TWAB uses event-by-event reconstruction from transfer flows and values wallet-held assets conservatively to avoid DeFi double-counting.",
         "Use HEVM debug panel to inspect tx/volume/price decomposition and confidence score.",
       ],
       debug: stats.debug as unknown as Record<string, unknown>,

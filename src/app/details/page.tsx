@@ -116,7 +116,7 @@ export default function DetailsPage() {
 
         <Metric
           name="TWAB"
-          explanation="Computed as exact-time integration `sum(valueUSD * duration) / totalDuration`, rebuilt event-by-event from first activity to now. Portfolio value includes (1) wallet balances from transfer flows and (2) protocol-custody balances inferred from wallet↔protocol transfers. Protocol universe is sourced from DeFiLlama HyperEVM/Hyperliquid L1 protocols (plus detected protocol contracts), so TWAB includes funds parked in lending/vault/staking/DEX contracts when they remain on HEVM."
+          explanation="Computed as exact-time integration `sum(valueUSD * duration) / totalDuration`, rebuilt event-by-event from first activity to now. To reduce overestimation, TWAB uses a conservative valuation model based on wallet-held balances reconstructed from transfer flows (including wallet-held receipt/LST tokens) and excludes synthetic protocol-custody mirroring that can double-count some DeFi loops."
         />
         <Metric
           name="Volume (USD)"
