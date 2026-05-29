@@ -22,7 +22,8 @@ const TRANSFER_TYPES = new Set<ClassifiedActivity["type"]>([
   "native_transfer",
   "internal_transfer",
 ]);
-const STABLES = new Set(["USDC", "USDT", "DAI", "USD0", "USDH", "USDHL", "USDE", "USDT0", "FDUSD"]);
+const STABLES = new Set(["USDC", "USDT", "DAI", "USD0", "USDH", "USDHL", "USDE", "USDT0", "FDUSD", "USDP", "FEUSD"]);
+const FALLBACK_CURRENT_MAX_AGE_SECONDS = 2 * 86400;
 
 const isProtocolCategory = (
   category: ClassifiedActivity["category"] | HevmProtocolAdapter["category"]
@@ -162,14 +163,9 @@ const resolveProtocolForTransfer = (
 const shouldAcceptTwabPrice = (price: PriceResult, asset: string, timestamp: number, endTimestamp: number) => {
   if (price.priceUsd === null || !Number.isFinite(price.priceUsd) || price.priceUsd <= 0) return false;
   if (price.source !== "fallback_current") return true;
-  if (STABLES.has(asset)) return true;
-
-  if (asset === "HYPE" || asset === "WHYPE" || asset === "0X5555555555555555555555555555555555555555") {
-    const ageSeconds = Math.max(0, endTimestamp - timestamp);
-    return ageSeconds <= 2 * 86400;
-  }
-
-  return true;
+  if (STABLES.has(asset) || asset.startsWith("USD")) return true;
+  const ageSeconds = Math.max(0, endTimestamp - timestamp);
+  return ageSeconds <= FALLBACK_CURRENT_MAX_AGE_SECONDS;
 };
 
 const buildUsdPositions = async (
@@ -328,7 +324,7 @@ export const buildPortfolioTimeline = async (
   }
 
   const endTs = Math.max(lastTs, args.endTimestamp);
-  const finalSnapshot = await buildUsdPositions(
+  const finalSegmentSnapshot = await buildUsdPositions(
     walletBalances,
     protocolBalances,
     lastTs,
@@ -342,15 +338,24 @@ export const buildPortfolioTimeline = async (
     startTimestamp: lastTs,
     endTimestamp: endTs,
     durationSeconds: finalDuration,
-    totalUsd: finalSnapshot.totalUsd,
-    contribution: finalSnapshot.totalUsd * finalDuration,
-    positions: finalSnapshot.positions,
-    priceSources: finalSnapshot.priceSources,
+    totalUsd: finalSegmentSnapshot.totalUsd,
+    contribution: finalSegmentSnapshot.totalUsd * finalDuration,
+    positions: finalSegmentSnapshot.positions,
+    priceSources: finalSegmentSnapshot.priceSources,
   });
+
+  const currentSnapshot = await buildUsdPositions(
+    walletBalances,
+    protocolBalances,
+    endTs,
+    lastBlock,
+    args.endTimestamp,
+    args.priceContext
+  );
 
   return {
     segments,
-    currentPositions: finalSnapshot.positions,
-    currentPortfolioUsd: finalSnapshot.totalUsd,
+    currentPositions: currentSnapshot.positions,
+    currentPortfolioUsd: currentSnapshot.totalUsd,
   };
 };
