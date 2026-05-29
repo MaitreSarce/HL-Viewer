@@ -17,6 +17,9 @@ const isPositiveAmount = (activity: ClassifiedActivity) =>
 const toAmount = (activity: ClassifiedActivity) =>
   Number.isFinite(activity.amount) ? Math.max(0, activity.amount ?? 0) : 0;
 
+const isBridgeLabeled = (activity: ClassifiedActivity) =>
+  activity.category === "bridge" && (activity.confidence ?? 0) >= 0.85;
+
 const isCoreSystemAddress = (value?: string) => {
   return isCoreBridgeSystemAddress(value);
 };
@@ -91,27 +94,23 @@ const pickSourceOnlyRows = (rows: ClassifiedActivity[], txSender: string) => {
   return largest ? [largest] : [];
 };
 
-const hasBridgeSignal = (activities: ClassifiedActivity[]) =>
-  activities.some(
-    (activity) =>
-      activity.type === "bridge_event" ||
-      activity.category === "bridge" ||
-      isCoreSystemAddress(activity.from) ||
-      isCoreSystemAddress(activity.to) ||
-      isCoreSystemAddress(activity.contractAddress)
-  );
-
 const selectConcreteBridgeTransfers = (activities: ClassifiedActivity[]) =>
   dedupeTransfers(
     activities.filter(
       (activity) =>
         (activity.type === "erc20_transfer" || activity.type === "native_transfer") &&
         isPositiveAmount(activity) &&
-        (activity.category === "bridge" ||
+        (isBridgeLabeled(activity) ||
           isCoreSystemAddress(activity.from) ||
-          isCoreSystemAddress(activity.to) ||
-          isCoreSystemAddress(activity.contractAddress))
+          isCoreSystemAddress(activity.to))
     )
+  );
+
+const hasBridgeSignal = (activities: ClassifiedActivity[]) =>
+  selectConcreteBridgeTransfers(activities).length > 0 ||
+  activities.some((activity) =>
+    activity.type === "bridge_event" &&
+      (isCoreSystemAddress(activity.from) || isCoreSystemAddress(activity.to))
   );
 
 const pickPrimaryCategory = (activities: ClassifiedActivity[], bridgeSignal: boolean) => {
@@ -123,6 +122,16 @@ const pickPrimaryCategory = (activities: ClassifiedActivity[], bridgeSignal: boo
     return "transfer" as const;
   }
   return "other" as const;
+};
+
+const pickZkCodexLikeCategory = (activities: ClassifiedActivity[], bridgeSignal: boolean) => {
+  if (bridgeSignal) return "bridge" as const;
+  if (activities.some((activity) => activity.category === "dex")) return "dex" as const;
+  if (activities.some((activity) => activity.category === "lending" || activity.category === "vault")) {
+    return "lending" as const;
+  }
+  if (activities.some((activity) => activity.category === "staking")) return "staking" as const;
+  return null;
 };
 
 const resolveUsd = async (
@@ -175,6 +184,7 @@ export const calculateVolumeUsd = async (
   const txGroups = groupByTxHash(activities);
 
   const wallet = normalizeAddress(walletAddress || "");
+  const strictZkCodexMode = wallet.length > 0;
 
   for (const txActivities of txGroups.values()) {
     const sender = resolveTxSender(txActivities);
@@ -210,8 +220,12 @@ export const calculateVolumeUsd = async (
     const concreteBridgeRows = selectConcreteBridgeTransfers(txActivities);
     const bridgeSignal = concreteBridgeRows.length > 0;
 
+    const category = strictZkCodexMode
+      ? pickZkCodexLikeCategory(txActivities, bridgeSignal)
+      : pickPrimaryCategory(txActivities, bridgeSignal);
+    if (!category) continue;
+
     totalVolumeUsd += txVolumeUsd;
-    const category = pickPrimaryCategory(txActivities, bridgeSignal);
 
     if (category === "dex") swapVolumeUsd += txVolumeUsd;
     else if (category === "bridge") bridgeVolumeUsd += txVolumeUsd;
@@ -351,8 +365,6 @@ export const calculateBridgeVolume = async (
   const wallet = normalizeAddress(walletAddress || "");
 
   for (const txActivities of txGroups.values()) {
-    if (!hasBridgeSignal(txActivities)) continue;
-
     const sender = resolveTxSender(txActivities);
     if (wallet && sender !== wallet) continue;
 
