@@ -59,6 +59,7 @@ type HevmData = {
   };
   meta: {
     warnings: string[];
+    debug?: Record<string, unknown>;
   };
 };
 
@@ -718,6 +719,14 @@ export default function Home() {
                   rows={hevm.stats.charts.volume[histGranularity].map((row) => ({ label: row.period, value: row.volume }))}
                 />
               </div>
+              {hevm.meta.debug ? (
+                <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
+                  <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-700">HEVM Debug</h3>
+                  <pre className="max-h-[420px] overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] text-slate-100">
+                    {JSON.stringify(hevm.meta.debug, null, 2)}
+                  </pre>
+                </article>
+              ) : null}
               {hevmWarnings.length > 0 ? (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
                   {hevmWarnings.map((warning) => (
