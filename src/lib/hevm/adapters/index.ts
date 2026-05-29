@@ -1,7 +1,7 @@
 import { normalizeAddress } from "@/lib/dashboard/shared";
+import { HYPE_CORE_SYSTEM_ADDRESS, isCoreBridgeSystemAddress } from "@/lib/hevm/bridge";
 import { ClassifiedActivity, HevmProtocolAdapter, Position, PriceContext, Protocol, RawActivity } from "@/lib/hevm/types";
 
-const BRIDGE_SYSTEM = "0x2222222222222222222222222222222222222222";
 const ERC20_TRANSFER_TOPIC = "0xddf252ad";
 
 const classify = (
@@ -69,8 +69,7 @@ const makeContractKeywordCategory = (
 };
 
 const isBridgeSystemAddress = (value: string) => {
-  const v = normalizeAddress(value);
-  return v === BRIDGE_SYSTEM || v.startsWith("0x20");
+  return isCoreBridgeSystemAddress(value);
 };
 
 export const nativeAdapter: HevmProtocolAdapter = {
@@ -186,7 +185,7 @@ export const bridgeAdapter: HevmProtocolAdapter = {
   id: "bridge",
   name: "Bridge",
   category: "bridge",
-  contracts: [BRIDGE_SYSTEM],
+  contracts: [HYPE_CORE_SYSTEM_ADDRESS],
   classifyActivity(activity) {
     const to = normalizeAddress(activity.to || "");
     const from = normalizeAddress(activity.from || "");

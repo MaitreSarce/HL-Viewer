@@ -201,13 +201,13 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
     const adapter = adapterById.get(activity.protocolId);
     if (!adapter) return 0;
     return adapter.getVolumeUsd(activity, priceContext);
-  });
+  }, wallet);
 
   const bridge = await calculateBridgeVolume(classified, async (activity) => {
     const adapter = adapterById.get(activity.protocolId);
     if (!adapter) return 0;
     return adapter.getVolumeUsd(activity, priceContext);
-  });
+  }, wallet);
 
   const timeline = await safe(
     () =>

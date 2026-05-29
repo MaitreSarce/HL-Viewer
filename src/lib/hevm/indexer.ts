@@ -1,11 +1,11 @@
 import { normalizeAddress, readStringKeys, toFiniteNumber } from "@/lib/dashboard/shared";
+import { isCoreBridgeSystemAddress } from "@/lib/hevm/bridge";
 import { HevmIndexerResult, RawActivity } from "@/lib/hevm/types";
 
 const HYPERSCAN_API_URL = "https://www.hyperscan.com/api";
 const ETHERSCAN_V2_API_URL = "https://api.etherscan.io/v2/api";
 const HYPEREVM_RPC_URL = "https://rpc.hyperliquid.xyz/evm";
 const CHAIN_ID = 999;
-const BRIDGE_SYSTEM_ADDRESS = "0x2222222222222222222222222222222222222222";
 const FETCH_TIMEOUT_MS = 15000;
 const ACTION_OFFSET = 10000;
 const ACTION_MAX_PAGES = 1000;
@@ -82,10 +82,7 @@ const readGasFeeNative = (row: Record<string, unknown>) => {
   return totalWei / 1e18;
 };
 
-const isBridgeSystemAddress = (value?: string) => {
-  const v = normalizeAddress(value ?? "");
-  return Boolean(v) && (v === BRIDGE_SYSTEM_ADDRESS || v.startsWith("0x20"));
-};
+const isBridgeSystemAddress = (value?: string) => isCoreBridgeSystemAddress(value);
 
 const safeFetchJson = async (url: string) => {
   const controller = new AbortController();

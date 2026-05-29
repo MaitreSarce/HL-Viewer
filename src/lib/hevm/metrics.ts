@@ -1,4 +1,5 @@
 import { normalizeAddress, utcDayKey, utcMonthKey } from "@/lib/dashboard/shared";
+import { isCoreBridgeSystemAddress } from "@/lib/hevm/bridge";
 import { ClassifiedActivity, PortfolioSegment, RawActivity } from "@/lib/hevm/types";
 
 const weekKey = (timestampMs: number) => {
@@ -8,6 +9,128 @@ const weekKey = (timestampMs: number) => {
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
   const week = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
   return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+};
+
+const isPositiveAmount = (activity: ClassifiedActivity) =>
+  Number.isFinite(activity.amount) && (activity.amount ?? 0) > 0;
+
+const toAmount = (activity: ClassifiedActivity) =>
+  Number.isFinite(activity.amount) ? Math.max(0, activity.amount ?? 0) : 0;
+
+const isCoreSystemAddress = (value?: string) => {
+  return isCoreBridgeSystemAddress(value);
+};
+
+const transferDedupeKey = (activity: ClassifiedActivity) =>
+  [
+    activity.txHash,
+    activity.type,
+    normalizeAddress(activity.from || ""),
+    normalizeAddress(activity.to || ""),
+    normalizeAddress(activity.contractAddress || ""),
+    activity.token || "",
+    activity.amountRaw || "",
+    activity.logIndex ?? "",
+    activity.traceId ?? "",
+  ].join("|");
+
+const dedupeTransfers = (activities: ClassifiedActivity[]) => {
+  const seen = new Set<string>();
+  const out: ClassifiedActivity[] = [];
+  for (const activity of activities) {
+    const key = transferDedupeKey(activity);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(activity);
+  }
+  return out;
+};
+
+const groupByTxHash = (activities: ClassifiedActivity[]) => {
+  const sorted = [...activities].sort(
+    (a, b) => (a.timestamp - b.timestamp) || (a.blockNumber - b.blockNumber)
+  );
+  const groups = new Map<string, ClassifiedActivity[]>();
+  for (const activity of sorted) {
+    const key = activity.txHash || `${activity.blockNumber}:${activity.timestamp}`;
+    const list = groups.get(key);
+    if (list) list.push(activity);
+    else groups.set(key, [activity]);
+  }
+  return groups;
+};
+
+const resolveTxSender = (activities: ClassifiedActivity[]) => {
+  const normalTx = activities.find((activity) =>
+    activity.type === "normal_tx" && normalizeAddress(activity.from || "").length > 0
+  );
+  if (normalTx?.from) return normalizeAddress(normalTx.from);
+
+  const outgoing = activities.find((activity) =>
+    activity.direction === "out" && normalizeAddress(activity.from || "").length > 0
+  );
+  if (outgoing?.from) return normalizeAddress(outgoing.from);
+
+  const fallback = activities.find((activity) => normalizeAddress(activity.from || "").length > 0);
+  return normalizeAddress(fallback?.from || "");
+};
+
+const pickSourceOnlyRows = (rows: ClassifiedActivity[], txSender: string) => {
+  if (rows.length === 0) return [];
+
+  const sender = normalizeAddress(txSender);
+  if (sender) {
+    const fromSender = rows.filter((row) => normalizeAddress(row.from || "") === sender);
+    if (fromSender.length > 0) return fromSender;
+  }
+
+  const outgoing = rows.filter((row) => row.direction === "out");
+  if (outgoing.length > 0) return outgoing;
+
+  const largest = [...rows].sort((a, b) => toAmount(b) - toAmount(a))[0];
+  return largest ? [largest] : [];
+};
+
+const hasBridgeSignal = (activities: ClassifiedActivity[]) =>
+  activities.some(
+    (activity) =>
+      activity.type === "bridge_event" ||
+      activity.category === "bridge" ||
+      isCoreSystemAddress(activity.from) ||
+      isCoreSystemAddress(activity.to) ||
+      isCoreSystemAddress(activity.contractAddress)
+  );
+
+const selectConcreteBridgeTransfers = (activities: ClassifiedActivity[]) =>
+  dedupeTransfers(
+    activities.filter(
+      (activity) =>
+        (activity.type === "erc20_transfer" || activity.type === "native_transfer") &&
+        isPositiveAmount(activity) &&
+        (activity.category === "bridge" ||
+          isCoreSystemAddress(activity.from) ||
+          isCoreSystemAddress(activity.to) ||
+          isCoreSystemAddress(activity.contractAddress))
+    )
+  );
+
+const pickPrimaryCategory = (activities: ClassifiedActivity[], bridgeSignal: boolean) => {
+  if (bridgeSignal) return "bridge" as const;
+  if (activities.some((activity) => activity.category === "dex")) return "dex" as const;
+  if (activities.some((activity) => activity.category === "lending")) return "lending" as const;
+  if (activities.some((activity) => activity.category === "staking")) return "staking" as const;
+  if (activities.some((activity) => activity.category === "erc20" || activity.category === "native")) {
+    return "transfer" as const;
+  }
+  return "other" as const;
+};
+
+const resolveUsd = async (
+  activity: ClassifiedActivity,
+  resolver: (activity: ClassifiedActivity) => Promise<number>
+) => {
+  const value = await resolver(activity);
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
 };
 
 export const calculateTwabUsd = (segments: PortfolioSegment[]) => {
@@ -38,9 +161,9 @@ export const calculateTwabUsd = (segments: PortfolioSegment[]) => {
 
 export const calculateVolumeUsd = async (
   activities: ClassifiedActivity[],
-  resolver: (activity: ClassifiedActivity) => Promise<number>
+  resolver: (activity: ClassifiedActivity) => Promise<number>,
+  walletAddress?: string
 ) => {
-  const seen = new Set<string>();
   let totalVolumeUsd = 0;
   let swapVolumeUsd = 0;
   let bridgeVolumeUsd = 0;
@@ -49,35 +172,53 @@ export const calculateVolumeUsd = async (
   let transferVolumeUsd = 0;
   let otherContractVolumeUsd = 0;
 
-  const sorted = [...activities].sort(
-    (a, b) => (a.timestamp - b.timestamp) || (a.blockNumber - b.blockNumber)
-  );
+  const txGroups = groupByTxHash(activities);
 
-  for (const activity of sorted) {
-    if (activity.type === "bridge_event") continue;
-    const dedupeKey = [
-      activity.txHash,
-      activity.type,
-      normalizeAddress(activity.from || ""),
-      normalizeAddress(activity.to || ""),
-      normalizeAddress(activity.contractAddress || ""),
-      activity.token || "",
-      activity.amountRaw || "",
-      activity.direction || "",
-    ].join("|");
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
+  const wallet = normalizeAddress(walletAddress || "");
 
-    const amount = await resolver(activity);
-    const usd = Number.isFinite(amount) ? Math.max(0, amount) : 0;
-    totalVolumeUsd += usd;
+  for (const txActivities of txGroups.values()) {
+    const sender = resolveTxSender(txActivities);
+    if (wallet && sender !== wallet) continue;
 
-    if (activity.category === "dex") swapVolumeUsd += usd;
-    else if (activity.category === "bridge") bridgeVolumeUsd += usd;
-    else if (activity.category === "lending") lendingVolumeUsd += usd;
-    else if (activity.category === "staking") stakingVolumeUsd += usd;
-    else if (activity.category === "native" || activity.category === "erc20") transferVolumeUsd += usd;
-    else otherContractVolumeUsd += usd;
+    const tokenRows = dedupeTransfers(
+      txActivities.filter((activity) => activity.type === "erc20_transfer" && isPositiveAmount(activity))
+    );
+    const sourceTokenRows = pickSourceOnlyRows(tokenRows, sender);
+
+    let tokenUsd = 0;
+    for (const row of sourceTokenRows) {
+      tokenUsd += await resolveUsd(row, resolver);
+    }
+
+    const nativeRows = dedupeTransfers(
+      txActivities.filter(
+        (activity) =>
+          activity.type === "native_transfer" &&
+          isPositiveAmount(activity)
+      )
+    );
+    const sourceNativeRows = pickSourceOnlyRows(nativeRows, sender);
+
+    let nativeUsd = 0;
+    for (const row of sourceNativeRows) {
+      nativeUsd += await resolveUsd(row, resolver);
+    }
+
+    const txVolumeUsd = tokenUsd > 0 ? tokenUsd : nativeUsd > 0 ? nativeUsd : 0;
+    if (txVolumeUsd <= 0) continue;
+
+    const concreteBridgeRows = selectConcreteBridgeTransfers(txActivities);
+    const bridgeSignal = concreteBridgeRows.length > 0;
+
+    totalVolumeUsd += txVolumeUsd;
+    const category = pickPrimaryCategory(txActivities, bridgeSignal);
+
+    if (category === "dex") swapVolumeUsd += txVolumeUsd;
+    else if (category === "bridge") bridgeVolumeUsd += txVolumeUsd;
+    else if (category === "lending") lendingVolumeUsd += txVolumeUsd;
+    else if (category === "staking") stakingVolumeUsd += txVolumeUsd;
+    else if (category === "transfer") transferVolumeUsd += txVolumeUsd;
+    else otherContractVolumeUsd += txVolumeUsd;
   }
 
   return {
@@ -199,36 +340,37 @@ export const calculateTxCounts = (activities: RawActivity[], walletAddress: stri
 
 export const calculateBridgeVolume = async (
   activities: ClassifiedActivity[],
-  resolver: (activity: ClassifiedActivity) => Promise<number>
+  resolver: (activity: ClassifiedActivity) => Promise<number>,
+  walletAddress?: string
 ) => {
-  const coreSystemAddress = "0x2222222222222222222222222222222222222222";
-  const seen = new Set<string>();
   let coreToEvmVolumeUsd = 0;
   let evmToCoreVolumeUsd = 0;
   let externalBridgeVolumeUsd = 0;
 
-  for (const activity of activities) {
-    if (activity.category !== "bridge") continue;
-    const from = normalizeAddress(activity.from || "");
-    const to = normalizeAddress(activity.to || activity.contractAddress || "");
-    const dedupeKey = [
-      activity.txHash,
-      from,
-      to,
-      normalizeAddress(activity.contractAddress || ""),
-      activity.token || "",
-      activity.amountRaw || "",
-      activity.direction || "",
-    ].join("|");
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
+  const txGroups = groupByTxHash(activities);
+  const wallet = normalizeAddress(walletAddress || "");
 
-    const value = await resolver(activity);
-    const usd = Number.isFinite(value) ? Math.max(0, value) : 0;
+  for (const txActivities of txGroups.values()) {
+    if (!hasBridgeSignal(txActivities)) continue;
 
-    if (from === coreSystemAddress || from.startsWith("0x20")) coreToEvmVolumeUsd += usd;
-    else if (to === coreSystemAddress || to.startsWith("0x20")) evmToCoreVolumeUsd += usd;
-    else externalBridgeVolumeUsd += usd;
+    const sender = resolveTxSender(txActivities);
+    if (wallet && sender !== wallet) continue;
+
+    const bridgeRows = selectConcreteBridgeTransfers(txActivities);
+    if (bridgeRows.length === 0) continue;
+    const sourceBridgeRows = pickSourceOnlyRows(bridgeRows, sender);
+
+    for (const row of sourceBridgeRows) {
+      const usd = await resolveUsd(row, resolver);
+      if (usd <= 0) continue;
+
+      const from = normalizeAddress(row.from || "");
+      const to = normalizeAddress(row.to || row.contractAddress || "");
+
+      if (isCoreSystemAddress(from)) coreToEvmVolumeUsd += usd;
+      else if (isCoreSystemAddress(to)) evmToCoreVolumeUsd += usd;
+      else externalBridgeVolumeUsd += usd;
+    }
   }
 
   return {

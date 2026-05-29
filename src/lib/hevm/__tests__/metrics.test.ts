@@ -5,6 +5,7 @@ import {
   calculateBridgeVolume,
   calculateTxCounts,
   calculateTwabUsd,
+  calculateVolumeUsd,
 } from "@/lib/hevm/metrics";
 import { createPriceContext } from "@/lib/hevm/pricing";
 import { ClassifiedActivity, PortfolioSegment, RawActivity } from "@/lib/hevm/types";
@@ -127,10 +128,10 @@ test("bridge volume classifies Core->EVM and EVM->Core", async () => {
       timestamp: 1,
       from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       to: "0x2222222222222222222222222222222222222222",
-      type: "bridge_event",
-      protocolId: "bridge",
-      protocolName: "Bridge",
-      category: "bridge",
+      type: "native_transfer",
+      protocolId: "native",
+      protocolName: "Native",
+      category: "native",
       confidence: 1,
       amount: 1,
     },
@@ -140,10 +141,10 @@ test("bridge volume classifies Core->EVM and EVM->Core", async () => {
       timestamp: 2,
       from: "0x2222222222222222222222222222222222222222",
       to: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      type: "bridge_event",
-      protocolId: "bridge",
-      protocolName: "Bridge",
-      category: "bridge",
+      type: "native_transfer",
+      protocolId: "native",
+      protocolName: "Native",
+      category: "native",
       confidence: 1,
       amount: 1,
     },
@@ -155,10 +156,175 @@ test("bridge volume classifies Core->EVM and EVM->Core", async () => {
   assert.equal(bridge.totalBridgeVolumeUsd, 200);
 });
 
+test("volume uses source-only tx aggregation and avoids double counting", async () => {
+  const wallet = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const activities: ClassifiedActivity[] = [
+    {
+      txHash: "0xvol-1",
+      blockNumber: 1,
+      timestamp: 1,
+      from: wallet,
+      to: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      type: "erc20_transfer",
+      protocolId: "erc20",
+      protocolName: "ERC20",
+      category: "erc20",
+      confidence: 1,
+      amount: 100,
+      direction: "out",
+      token: "USDC",
+      amountRaw: "100000000",
+      logIndex: 1,
+    },
+    {
+      txHash: "0xvol-1",
+      blockNumber: 1,
+      timestamp: 1,
+      from: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      to: wallet,
+      type: "erc20_transfer",
+      protocolId: "erc20",
+      protocolName: "ERC20",
+      category: "erc20",
+      confidence: 1,
+      amount: 99,
+      direction: "in",
+      token: "XYZ",
+      amountRaw: "99000000",
+      logIndex: 2,
+    },
+    {
+      txHash: "0xvol-1",
+      blockNumber: 1,
+      timestamp: 1,
+      from: wallet,
+      to: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      type: "native_transfer",
+      protocolId: "native",
+      protocolName: "Native",
+      category: "native",
+      confidence: 1,
+      amount: 3,
+      direction: "out",
+      token: "HYPE",
+      amountRaw: "3000000000000000000",
+    },
+    {
+      txHash: "0xvol-2",
+      blockNumber: 2,
+      timestamp: 2,
+      from: wallet,
+      to: "0xcccccccccccccccccccccccccccccccccccccccc",
+      type: "native_transfer",
+      protocolId: "native",
+      protocolName: "Native",
+      category: "native",
+      confidence: 1,
+      amount: 2,
+      direction: "out",
+      token: "HYPE",
+      amountRaw: "2000000000000000000",
+    },
+  ];
+
+  const result = await calculateVolumeUsd(activities, async (activity) => activity.amount ?? 0);
+  assert.equal(result.totalVolumeUsd, 102);
+  assert.equal(result.transferVolumeUsd, 102);
+  assert.equal(result.bridgeVolumeUsd, 0);
+});
+
+test("bridge volume prefers concrete bridge transfers over duplicate bridge_event rows", async () => {
+  const wallet = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const system = "0x2222222222222222222222222222222222222222";
+  const activities: ClassifiedActivity[] = [
+    {
+      txHash: "0xbr-1",
+      blockNumber: 1,
+      timestamp: 1,
+      from: wallet,
+      to: system,
+      type: "erc20_transfer",
+      protocolId: "erc20",
+      protocolName: "ERC20",
+      category: "erc20",
+      confidence: 1,
+      amount: 50,
+      direction: "out",
+      token: "USDC",
+      amountRaw: "50000000",
+      logIndex: 1,
+    },
+    {
+      txHash: "0xbr-1",
+      blockNumber: 1,
+      timestamp: 1,
+      from: wallet,
+      to: system,
+      type: "bridge_event",
+      protocolId: "bridge",
+      protocolName: "Bridge",
+      category: "bridge",
+      confidence: 1,
+      amount: 50,
+      direction: "out",
+      token: "USDC",
+      amountRaw: "50000000",
+      logIndex: 1,
+    },
+    {
+      txHash: "0xbr-2",
+      blockNumber: 2,
+      timestamp: 2,
+      from: system,
+      to: wallet,
+      type: "native_transfer",
+      protocolId: "native",
+      protocolName: "Native",
+      category: "native",
+      confidence: 1,
+      amount: 25,
+      direction: "in",
+      token: "HYPE",
+      amountRaw: "25000000000000000000",
+    },
+  ];
+
+  const bridge = await calculateBridgeVolume(activities, async (activity) => activity.amount ?? 0);
+  assert.equal(bridge.evmToCoreVolumeUsd, 50);
+  assert.equal(bridge.coreToEvmVolumeUsd, 25);
+  assert.equal(bridge.totalBridgeVolumeUsd, 75);
+});
+
+test("bridge detection does not treat random 0x20-prefixed address as system bridge", async () => {
+  const wallet = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const random20Prefix = "0x20abcdefabcdefabcdefabcdefabcdefabcdef12";
+  const activities: ClassifiedActivity[] = [
+    {
+      txHash: "0xnb-1",
+      blockNumber: 1,
+      timestamp: 1,
+      from: wallet,
+      to: random20Prefix,
+      type: "erc20_transfer",
+      protocolId: "erc20",
+      protocolName: "ERC20",
+      category: "erc20",
+      confidence: 1,
+      amount: 100,
+      direction: "out",
+      token: "USDC",
+      amountRaw: "100000000",
+      logIndex: 1,
+    },
+  ];
+
+  const bridge = await calculateBridgeVolume(activities, async (activity) => activity.amount ?? 0);
+  assert.equal(bridge.totalBridgeVolumeUsd, 0);
+});
+
 test("unknown token price is ignored and does not crash", async () => {
   const { context, ignoredTokens } = await createPriceContext();
   const price = await context.resolvePriceUsd("SOME_UNKNOWN_TOKEN_123456", Math.floor(Date.now() / 1000));
   assert.equal(price.source, "missing");
   assert.equal(ignoredTokens.length > 0, true);
 });
-
