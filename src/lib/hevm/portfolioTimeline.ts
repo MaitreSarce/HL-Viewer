@@ -25,6 +25,27 @@ const TRANSFER_TYPES = new Set<ClassifiedActivity["type"]>([
 const STABLES = new Set(["USDC", "USDT", "DAI", "USD0", "USDH", "USDHL", "USDE", "USDT0", "FDUSD", "USDP", "FEUSD"]);
 const FALLBACK_CURRENT_MAX_AGE_SECONDS = 2 * 86400;
 const INCLUDE_PROTOCOL_CUSTODY_IN_TWAB = false;
+const TRUSTED_FALLBACK_SYMBOLS = new Set([
+  "HYPE",
+  "WHYPE",
+  "KHYPE",
+  "STHYPE",
+  "WSTHYPE",
+  "MHYPE",
+  "KMHYPE",
+  "LHYPE",
+  "UETH",
+  "USOL",
+  "UBTC",
+  "UXPL",
+  "UPUMP",
+  "USDE",
+  "USDP",
+  "USDC",
+  "USDH",
+  "USDT0",
+  "USDXL",
+]);
 
 const isProtocolCategory = (
   category: ClassifiedActivity["category"] | HevmProtocolAdapter["category"]
@@ -89,7 +110,7 @@ const resolveDirection = (wallet: string, activity: ClassifiedActivity): "in" | 
 const updateBalance = (balances: Map<string, number>, key: string, delta: number) => {
   if (!Number.isFinite(delta) || Math.abs(delta) <= EPSILON) return;
   const previous = balances.get(key) ?? 0;
-  const next = Math.max(0, previous + delta);
+  const next = previous + delta;
   if (!nonZero(next)) balances.delete(key);
   else balances.set(key, next);
 };
@@ -161,9 +182,16 @@ const resolveProtocolForTransfer = (
   return { ...txRef, counterparty };
 };
 
-const shouldAcceptTwabPrice = (price: PriceResult, asset: string, timestamp: number, endTimestamp: number) => {
+const shouldAcceptTwabPrice = (
+  price: PriceResult,
+  asset: string,
+  timestamp: number,
+  endTimestamp: number
+) => {
   if (price.priceUsd === null || !Number.isFinite(price.priceUsd) || price.priceUsd <= 0) return false;
   if (price.source !== "fallback_current") return true;
+  const pricedToken = String(price.token || "").trim().toUpperCase();
+  if (TRUSTED_FALLBACK_SYMBOLS.has(pricedToken)) return true;
   if (STABLES.has(asset) || asset.startsWith("USD")) return true;
   const ageSeconds = Math.max(0, endTimestamp - timestamp);
   return ageSeconds <= FALLBACK_CURRENT_MAX_AGE_SECONDS;
@@ -245,7 +273,7 @@ const applyTransferToLedgers = (
   walletBalances: Map<string, number>,
   protocolBalances: Map<string, { protocol: ProtocolRef; asset: string; amount: number; contract: string }>
 ) => {
-  const token = balanceKey(activity.tokenSymbol || activity.token || "HYPE");
+  const token = balanceKey(activity.token || activity.tokenSymbol || "HYPE");
   const amount = Number.isFinite(activity.amount) ? Math.max(0, activity.amount ?? 0) : 0;
   if (!nonZero(amount)) return;
 
