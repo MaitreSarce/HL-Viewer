@@ -20,6 +20,10 @@ export type RawActivity = {
   direction?: "in" | "out" | "self" | "unknown";
   logIndex?: number;
   traceId?: string;
+  methodId?: string;
+  topics?: string[];
+  data?: string;
+  source?: "hyperscan_txlist" | "hyperscan_tokentx" | "hyperscan_internal" | "rpc_receipt_log" | "rpc_getLogs";
 };
 
 export type Protocol = {
@@ -79,6 +83,13 @@ export interface HevmProtocolAdapter {
   getPositions(wallet: string, blockNumber: number): Promise<Position[]>;
   getVolumeUsd(activity: ClassifiedActivity, priceContext: PriceContext): Promise<number>;
 }
+
+export type HevmIndexerResult = {
+  activities: RawActivity[];
+  warnings: string[];
+  errors: Array<{ stage: string; message: string }>;
+  dataSourcesUsed: string[];
+};
 
 export type HevmDashboardStats = {
   wallet: string;
@@ -149,5 +160,14 @@ export type HevmDashboardStats = {
     volumeBreakdownByCategory: Record<string, number>;
     txCountBreakdown: Record<string, number>;
     protocolClassification: Record<string, number>;
+    twabSummary: {
+      durationSeconds: number;
+      area: number;
+      segmentCount: number;
+    };
+    indexer: {
+      warnings: string[];
+      errors: Array<{ stage: string; message: string }>;
+    };
   };
 };

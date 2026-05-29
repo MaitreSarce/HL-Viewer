@@ -31,7 +31,9 @@ export type HevmApiResult = {
 };
 
 const periodKey = (timestampMs: number, g: "day" | "week" | "month" | "year") => {
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) return "";
   const d = new Date(timestampMs);
+  if (Number.isNaN(d.getTime())) return "";
   if (g === "day") return d.toISOString().slice(0, 10);
   if (g === "month") return d.toISOString().slice(0, 7);
   if (g === "year") return String(d.getUTCFullYear());
@@ -55,6 +57,7 @@ const buildVolumeSeries = (segments: Array<{ startTimestamp: number; totalUsd: n
     const tsMs = s.startTimestamp * 1000;
     for (const g of ["day", "week", "month", "year"] as const) {
       const key = periodKey(tsMs, g);
+      if (!key) continue;
       maps[g].set(key, (maps[g].get(key) ?? 0) + Math.max(0, s.totalUsd));
     }
   }
@@ -67,7 +70,7 @@ const buildVolumeSeries = (segments: Array<{ startTimestamp: number; totalUsd: n
   };
 };
 
-const buildTwabSeries = (segments: Array<{ startTimestamp: number; totalUsd: number }>) => {
+const buildTwabSeries = (segments: Array<{ startTimestamp: number; totalUsd: number; durationSeconds: number; contribution: number }>) => {
   const maps: Record<"day" | "week" | "month" | "year", Map<string, { area: number; duration: number }>> = {
     day: new Map(),
     week: new Map(),
@@ -79,9 +82,10 @@ const buildTwabSeries = (segments: Array<{ startTimestamp: number; totalUsd: num
     const tsMs = s.startTimestamp * 1000;
     for (const g of ["day", "week", "month", "year"] as const) {
       const key = periodKey(tsMs, g);
+      if (!key) continue;
       const row = maps[g].get(key) ?? { area: 0, duration: 0 };
-      row.area += s.totalUsd;
-      row.duration += 1;
+      row.area += s.contribution;
+      row.duration += Math.max(0, s.durationSeconds);
       maps[g].set(key, row);
     }
   }
@@ -105,7 +109,12 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
   const firstTsMs = stats.walletAge.firstSeenTimestamp > 0 ? stats.walletAge.firstSeenTimestamp * 1000 : null;
   const since = firstTsMs ? ageFromTimestamp(firstTsMs) : { days: 0, months: 0, years: 0 };
 
-  const segments = stats.twabSegments.map((s) => ({ startTimestamp: s.startTimestamp, totalUsd: s.totalUsd }));
+  const segments = stats.twabSegments.map((s) => ({
+    startTimestamp: s.startTimestamp,
+    totalUsd: s.totalUsd,
+    durationSeconds: s.durationSeconds,
+    contribution: s.contribution,
+  }));
 
   return {
     source: "api",

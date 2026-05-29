@@ -415,36 +415,44 @@ export default function Home() {
         address: address.trim(),
       });
 
-      const [tradingRes, hevmRes, unitRes] = await Promise.all([
-        fetch(`/api/dashboard/trading?${params.toString()}`),
-        fetch(`/api/dashboard/hevm?address=${encodeURIComponent(address.trim())}`),
-        fetch(`/api/dashboard/unit-bridge?address=${encodeURIComponent(address.trim())}`),
-      ]);
+      const safeCall = async (url: string) => {
+        try {
+          const response = await fetch(url);
+          const payload = await response.json().catch(() => ({}));
+          return { ok: response.ok, payload };
+        } catch (e) {
+          return { ok: false, payload: { error: e instanceof Error ? e.message : "Network error." } };
+        }
+      };
 
-      const [tradingJson, hevmJson, unitJson] = await Promise.all([tradingRes.json(), hevmRes.json(), unitRes.json()]);
+      const [tradingRes, hevmRes, unitRes] = await Promise.all([
+        safeCall(`/api/dashboard/trading?${params.toString()}`),
+        safeCall(`/api/dashboard/hevm?address=${encodeURIComponent(address.trim())}`),
+        safeCall(`/api/dashboard/unit-bridge?address=${encodeURIComponent(address.trim())}`),
+      ]);
 
       const failures: string[] = [];
 
       if (tradingRes.ok) {
-        setTrading(tradingJson as TradingData);
+        setTrading(tradingRes.payload as TradingData);
       } else {
-        failures.push((tradingJson as { error?: string }).error ?? "Trading API failed.");
+        failures.push((tradingRes.payload as { error?: string }).error ?? "Trading API failed.");
       }
 
       if (hevmRes.ok) {
-        setHevm(hevmJson as HevmData);
+        setHevm(hevmRes.payload as HevmData);
       } else {
-        failures.push((hevmJson as { error?: string }).error ?? "HEVM API failed.");
+        failures.push((hevmRes.payload as { error?: string }).error ?? "HEVM API failed.");
       }
 
       if (unitRes.ok) {
-        setUnitBridge(unitJson as UnitBridgeData);
+        setUnitBridge(unitRes.payload as UnitBridgeData);
       } else {
-        failures.push((unitJson as { error?: string }).error ?? "Unit bridge API failed.");
+        failures.push((unitRes.payload as { error?: string }).error ?? "Unit bridge API failed.");
       }
 
       if (failures.length > 0) {
-      setError(failures.join(" "));
+        setError(failures.join(" "));
       }
     } catch {
       setError("Unable to load dashboard data.");

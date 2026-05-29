@@ -1,98 +1,256 @@
 import { normalizeAddress } from "@/lib/dashboard/shared";
 import { ClassifiedActivity, HevmProtocolAdapter, PortfolioSegment, Position, PriceContext, PriceResult } from "@/lib/hevm/types";
 
-export const buildPortfolioTimeline = async (args: {
+type BuildTimelineArgs = {
   wallet: string;
   activities: ClassifiedActivity[];
   adapters: HevmProtocolAdapter[];
   priceContext: PriceContext;
   endTimestamp: number;
-}): Promise<{ segments: PortfolioSegment[]; currentPositions: Position[]; currentPortfolioUsd: number }> => {
-  const wallet = normalizeAddress(args.wallet);
-  const sorted = [...args.activities].sort((a, b) => a.timestamp - b.timestamp);
-  const balances = new Map<string, number>();
-  const positions: Position[] = [];
-  const segments: PortfolioSegment[] = [];
+};
 
-  if (sorted.length === 0) {
+const DAY_SECONDS = 86400;
+
+const nonZero = (value: number) => Number.isFinite(value) && Math.abs(value) > 1e-14;
+
+const balanceKey = (token: string) => {
+  const t = (token || "HYPE").trim();
+  if (!t) return "HYPE";
+  return t.toUpperCase();
+};
+
+const buildWalletPositions = async (
+  balances: Map<string, number>,
+  timestamp: number,
+  blockNumber: number,
+  priceContext: PriceContext
+) => {
+  const positions: Position[] = [];
+  const priceSources: PriceResult[] = [];
+  let totalUsd = 0;
+
+  for (const [asset, amount] of balances.entries()) {
+    if (!nonZero(amount)) continue;
+    const price = await priceContext.resolvePriceUsd(asset, timestamp);
+    priceSources.push(price);
+    const priceUsd = price.priceUsd ?? 0;
+    const valueUsd = amount * priceUsd;
+    totalUsd += valueUsd;
+    positions.push({
+      protocol: "wallet",
+      category: "wallet_balance",
+      asset,
+      amount,
+      valueUsd,
+      blockNumber,
+      timestamp,
+      source: "wallet_balance",
+    });
+  }
+
+  return { positions, priceSources, totalUsd };
+};
+
+const cacheAdapterPositions = async (
+  wallet: string,
+  blockNumber: number,
+  adapters: HevmProtocolAdapter[],
+  cache: Map<string, Position[]>
+) => {
+  const merged: Position[] = [];
+  for (const adapter of adapters) {
+    const cacheKey = `${adapter.id}:${blockNumber}`;
+    if (cache.has(cacheKey)) {
+      merged.push(...(cache.get(cacheKey) ?? []));
+      continue;
+    }
+    try {
+      const positions = await adapter.getPositions(wallet, blockNumber);
+      cache.set(cacheKey, positions);
+      merged.push(...positions);
+    } catch {
+      cache.set(cacheKey, []);
+    }
+  }
+  return merged;
+};
+
+const buildDefiPositionsUsd = async (
+  positions: Position[],
+  timestamp: number,
+  priceContext: PriceContext
+) => {
+  const out: Position[] = [];
+  const priceSources: PriceResult[] = [];
+  let totalUsd = 0;
+
+  for (const position of positions) {
+    const asset = balanceKey(position.asset);
+    const price = await priceContext.resolvePriceUsd(asset, timestamp);
+    priceSources.push(price);
+    const valueUsd = (price.priceUsd ?? 0) * position.amount;
+    totalUsd += valueUsd;
+    out.push({
+      ...position,
+      asset,
+      valueUsd,
+      timestamp,
+    });
+  }
+  return { out, priceSources, totalUsd };
+};
+
+const applyActivityToBalances = (wallet: string, balances: Map<string, number>, activity: ClassifiedActivity) => {
+  const token = balanceKey(activity.token || "HYPE");
+  const amount = Number.isFinite(activity.amount) ? activity.amount ?? 0 : 0;
+  if (!nonZero(amount)) return;
+
+  const previous = balances.get(token) ?? 0;
+  let next = previous;
+  if (activity.direction === "in") next = previous + amount;
+  else if (activity.direction === "out") next = previous - amount;
+  else if (activity.direction === "self") next = previous;
+
+  const from = normalizeAddress(activity.from || "");
+  const to = normalizeAddress(activity.to || "");
+  if (activity.direction === "unknown") {
+    if (from === wallet && to !== wallet) next = previous - amount;
+    else if (to === wallet && from !== wallet) next = previous + amount;
+  }
+
+  if (!Number.isFinite(next)) return;
+  const clamped = Math.max(0, next);
+  if (!nonZero(clamped)) balances.delete(token);
+  else balances.set(token, clamped);
+};
+
+const compressActivitiesByDay = (activities: ClassifiedActivity[]) => {
+  type BucketRow = {
+    dayStart: number;
+    blockNumber: number;
+    from?: string;
+    to?: string;
+    deltas: Map<string, number>;
+  };
+
+  const buckets = new Map<number, BucketRow>();
+  for (const activity of activities) {
+    if (!Number.isFinite(activity.timestamp) || activity.timestamp <= 0) continue;
+    const dayStart = Math.floor(activity.timestamp / DAY_SECONDS) * DAY_SECONDS;
+    const token = balanceKey(activity.token || "HYPE");
+    const amount = Number.isFinite(activity.amount) ? Math.max(0, activity.amount ?? 0) : 0;
+
+    const bucket = buckets.get(dayStart) ?? {
+      dayStart,
+      blockNumber: activity.blockNumber,
+      from: activity.from,
+      to: activity.to,
+      deltas: new Map<string, number>(),
+    };
+    bucket.blockNumber = Math.max(bucket.blockNumber, activity.blockNumber);
+
+    const current = bucket.deltas.get(token) ?? 0;
+    let next = current;
+    if (activity.direction === "in") next += amount;
+    else if (activity.direction === "out") next -= amount;
+    else if (activity.direction === "unknown") next = current;
+    bucket.deltas.set(token, next);
+    buckets.set(dayStart, bucket);
+  }
+
+  const synthetic: ClassifiedActivity[] = [];
+  for (const bucket of [...buckets.values()].sort((a, b) => a.dayStart - b.dayStart)) {
+    for (const [token, delta] of bucket.deltas.entries()) {
+      if (!nonZero(delta)) continue;
+      synthetic.push({
+        txHash: `synthetic-${bucket.dayStart}-${token}`,
+        blockNumber: bucket.blockNumber,
+        timestamp: bucket.dayStart + DAY_SECONDS - 1,
+        from: bucket.from,
+        to: bucket.to,
+        type: delta >= 0 ? "erc20_transfer" : "internal_transfer",
+        token,
+        amountRaw: String(Math.abs(delta)),
+        amount: Math.abs(delta),
+        direction: delta >= 0 ? "in" : "out",
+        protocolId: "timelineSynthetic",
+        protocolName: "Timeline Synthetic",
+        category: "erc20",
+        confidence: 1,
+      });
+    }
+  }
+  return synthetic;
+};
+
+export const buildPortfolioTimeline = async (
+  args: BuildTimelineArgs
+): Promise<{ segments: PortfolioSegment[]; currentPositions: Position[]; currentPortfolioUsd: number }> => {
+  const wallet = normalizeAddress(args.wallet);
+  const sorted = [...args.activities]
+    .filter((activity) => Number.isFinite(activity.timestamp) && activity.timestamp > 0)
+    .sort((a, b) => (a.timestamp - b.timestamp) || (a.blockNumber - b.blockNumber));
+
+  const timelineActivities = compressActivitiesByDay(sorted);
+
+  if (timelineActivities.length === 0) {
     return { segments: [], currentPositions: [], currentPortfolioUsd: 0 };
   }
 
-  const computePortfolio = async (timestamp: number): Promise<{ totalUsd: number; priceSources: PriceResult[]; pos: Position[] }> => {
-    let totalUsd = 0;
-    const priceSources: PriceResult[] = [];
-    const pos: Position[] = [];
+  const balances = new Map<string, number>();
+  const segments: PortfolioSegment[] = [];
+  const adapterCache = new Map<string, Position[]>();
 
-    for (const [asset, amount] of balances.entries()) {
-      if (!Number.isFinite(amount) || amount === 0) continue;
-      const price = await args.priceContext.resolvePriceUsd(asset, timestamp);
-      priceSources.push(price);
-      const valueUsd = price.priceUsd ? amount * price.priceUsd : 0;
-      totalUsd += valueUsd;
-      pos.push({
-        protocol: "wallet",
-        category: "wallet_balance",
-        asset,
-        amount,
-        valueUsd,
-        blockNumber: 0,
-        timestamp,
-        source: "wallet_balance",
-      });
-    }
+  let lastTs = timelineActivities[0].timestamp;
+  let lastBlock = timelineActivities[0].blockNumber;
 
-    return { totalUsd, priceSources, pos };
-  };
+  for (const activity of timelineActivities) {
+    const ts = Math.max(lastTs, activity.timestamp);
+    const durationSeconds = Math.max(0, ts - lastTs);
 
-  let lastTs = sorted[0].timestamp;
+    const walletSnapshot = await buildWalletPositions(balances, lastTs, lastBlock, args.priceContext);
+    const defiRaw = await cacheAdapterPositions(wallet, lastBlock, args.adapters, adapterCache);
+    const defiSnapshot = await buildDefiPositionsUsd(defiRaw, lastTs, args.priceContext);
 
-  for (const activity of sorted) {
-    const nowTs = Math.max(activity.timestamp, lastTs);
-    const snapBefore = await computePortfolio(lastTs);
-    const duration = Math.max(0, nowTs - lastTs);
+    const totalUsd = walletSnapshot.totalUsd + defiSnapshot.totalUsd;
+    const mergedPositions = [...walletSnapshot.positions, ...defiSnapshot.out];
+    const mergedSources = [...walletSnapshot.priceSources, ...defiSnapshot.priceSources];
+
     segments.push({
       startTimestamp: lastTs,
-      endTimestamp: nowTs,
-      durationSeconds: duration,
-      totalUsd: snapBefore.totalUsd,
-      contribution: snapBefore.totalUsd * duration,
-      positions: snapBefore.pos,
-      priceSources: snapBefore.priceSources,
+      endTimestamp: ts,
+      durationSeconds,
+      totalUsd,
+      contribution: totalUsd * durationSeconds,
+      positions: mergedPositions,
+      priceSources: mergedSources,
     });
 
-    const token = (activity.token || "HYPE").toUpperCase();
-    const amount = activity.amount ?? 0;
-    if (amount > 0) {
-      const prev = balances.get(token) ?? 0;
-      if (activity.direction === "in") balances.set(token, prev + amount);
-      else if (activity.direction === "out") balances.set(token, prev - amount);
-    }
-
-    for (const adapter of args.adapters) {
-      if (adapter.id !== activity.protocolId) continue;
-      const extraPositions = await adapter.getPositions(wallet, activity.blockNumber).catch(() => []);
-      for (const p of extraPositions) positions.push(p);
-    }
-
-    lastTs = nowTs;
+    applyActivityToBalances(wallet, balances, activity);
+    lastTs = ts;
+    lastBlock = Math.max(lastBlock, activity.blockNumber);
   }
 
-  const finalSnap = await computePortfolio(lastTs);
-  const endTs = Math.max(args.endTimestamp, lastTs);
+  const endTs = Math.max(lastTs, args.endTimestamp);
+  const finalWalletSnapshot = await buildWalletPositions(balances, lastTs, lastBlock, args.priceContext);
+  const finalDefiRaw = await cacheAdapterPositions(wallet, lastBlock, args.adapters, adapterCache);
+  const finalDefiSnapshot = await buildDefiPositionsUsd(finalDefiRaw, lastTs, args.priceContext);
+  const finalTotalUsd = finalWalletSnapshot.totalUsd + finalDefiSnapshot.totalUsd;
   const finalDuration = Math.max(0, endTs - lastTs);
+
   segments.push({
     startTimestamp: lastTs,
     endTimestamp: endTs,
     durationSeconds: finalDuration,
-    totalUsd: finalSnap.totalUsd,
-    contribution: finalSnap.totalUsd * finalDuration,
-    positions: finalSnap.pos,
-    priceSources: finalSnap.priceSources,
+    totalUsd: finalTotalUsd,
+    contribution: finalTotalUsd * finalDuration,
+    positions: [...finalWalletSnapshot.positions, ...finalDefiSnapshot.out],
+    priceSources: [...finalWalletSnapshot.priceSources, ...finalDefiSnapshot.priceSources],
   });
 
   return {
     segments,
-    currentPositions: finalSnap.pos,
-    currentPortfolioUsd: finalSnap.totalUsd,
+    currentPositions: [...finalWalletSnapshot.positions, ...finalDefiSnapshot.out],
+    currentPortfolioUsd: finalTotalUsd,
   };
 };
