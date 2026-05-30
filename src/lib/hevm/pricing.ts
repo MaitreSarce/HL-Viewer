@@ -6,9 +6,20 @@ const DEFILLAMA_BATCH_HIST = "https://coins.llama.fi/batchHistorical";
 const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
 const COINGECKO_SIMPLE = "https://api.coingecko.com/api/v3/simple/price";
 const COINGECKO_HISTORY = "https://api.coingecko.com/api/v3/coins/hyperliquid/history";
+const COINGECKO_HISTORY_BASE = "https://api.coingecko.com/api/v3/coins";
 const FETCH_TIMEOUT_MS = 5000;
 
 const STABLES = new Set(["USDC", "USDT", "DAI", "USD0", "USDH", "USDHL", "USDE", "USDT0", "FDUSD", "USDP", "FEUSD"]);
+const COINGECKO_SYMBOL_ID = new Map<string, string>([
+  ["HYPE", "hyperliquid"],
+  ["WHYPE", "hyperliquid"],
+  ["USOL", "unit-solana"],
+  ["UETH", "unit-ethereum"],
+  ["UBTC", "unit-bitcoin"],
+  ["SOL", "solana"],
+  ["ETH", "ethereum"],
+  ["BTC", "bitcoin"],
+]);
 
 type HyperliquidSpotContext = {
   symbolToCurrentUsd: Map<string, number>;
@@ -308,14 +319,20 @@ export const createPriceContext = async (): Promise<{
       return historical;
     }
 
-    if (symbol === "HYPE" || symbol === "WHYPE") {
+    const coingeckoId = COINGECKO_SYMBOL_ID.get(symbol);
+    if (coingeckoId) {
       try {
         const dateParam = toCoinGeckoDateParam(ts);
-        const payload = await safeFetchJson(`${COINGECKO_HISTORY}?date=${dateParam}&localization=false`);
+        const endpoint =
+          coingeckoId === "hyperliquid"
+            ? COINGECKO_HISTORY
+            : `${COINGECKO_HISTORY_BASE}/${encodeURIComponent(coingeckoId)}/history`;
+        const payload = await safeFetchJson(`${endpoint}?date=${dateParam}&localization=false`);
         const price = Number(payload?.market_data?.current_price?.usd ?? 0);
         if (Number.isFinite(price) && price > 0) {
           const result: PriceResult = { token: symbol, timestamp: ts, priceUsd: price, source: "onchain" };
           cache.set(key, result);
+          fallbackCurrentByToken.set(symbol, price);
           return result;
         }
       } catch (error) {
@@ -324,7 +341,7 @@ export const createPriceContext = async (): Promise<{
     }
 
     try {
-      if (symbol === "HYPE" || symbol === "WHYPE") {
+      if (coingeckoId === "hyperliquid") {
         const payload = await safeFetchJson(`${COINGECKO_SIMPLE}?ids=hyperliquid&vs_currencies=usd`);
         if (payload) {
           const price = Number(payload?.hyperliquid?.usd ?? 0);
