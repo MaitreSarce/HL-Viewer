@@ -18,6 +18,21 @@ import { ClassifiedActivity, HevmDashboardStats, RawActivity } from "@/lib/hevm/
 const HYPEREVMSCAN_ADDRESS_URL = "https://hyperevmscan.io/address";
 const HYPEREVMSCAN_TXS_URL = "https://hyperevmscan.io/txs";
 const FETCH_TIMEOUT_MS = 6000;
+const TWAB_SNAPSHOT_GRANULARITY_SECONDS = 3600;
+const HEVM_STATS_CACHE_TTL_MS = 5 * 60 * 1000;
+const HEVM_STATS_CACHE_MAX_SIZE = 200;
+
+type HevmStatsCacheEntry = {
+  expiresAtMs: number;
+  value: HevmDashboardStats;
+};
+
+const hevmStatsCache = new Map<string, HevmStatsCacheEntry>();
+
+const toStableTwabSnapshotTimestamp = (timestampSec: number) => {
+  const safe = Math.max(0, Math.floor(timestampSec));
+  return Math.floor(safe / TWAB_SNAPSHOT_GRANULARITY_SECONDS) * TWAB_SNAPSHOT_GRANULARITY_SECONDS;
+};
 
 const classifyActivities = (
   activities: RawActivity[],
@@ -172,6 +187,14 @@ const fetchExplorerSnapshot = async (wallet: string) => {
 
 export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashboardStats> => {
   const now = Math.floor(Date.now() / 1000);
+  const twabEndTimestamp = Math.max(0, Math.min(now, toStableTwabSnapshotTimestamp(now)));
+  const cacheKey = `${wallet.toLowerCase()}:${twabEndTimestamp}`;
+  const nowMs = Date.now();
+
+  const cached = hevmStatsCache.get(cacheKey);
+  if (cached && cached.expiresAtMs > nowMs) {
+    return cached.value;
+  }
 
   const protocols = await safe(() => fetchProtocolRegistry(), []);
   const adapters = buildAdapters(protocols);
@@ -216,7 +239,7 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
         activities: classified,
         adapters,
         priceContext,
-        endTimestamp: now,
+        endTimestamp: twabEndTimestamp,
       }),
     { segments: [], currentPositions: [], currentPortfolioUsd: 0 }
   );
@@ -278,11 +301,11 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
     )
   );
 
-  return {
+  const result: HevmDashboardStats = {
     wallet,
     chainId: 999,
     startTime: twab.startTime || walletAgeWithExplorer.firstSeenTimestamp || now,
-    endTime: twab.endTime || now,
+    endTime: twab.endTime || twabEndTimestamp,
     twabUsd: twab.twabUsd,
     twabSegments: timeline.segments,
     currentPortfolioUsd: timeline.currentPortfolioUsd,
@@ -332,4 +355,21 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
       },
     },
   };
+
+  hevmStatsCache.set(cacheKey, {
+    value: result,
+    expiresAtMs: nowMs + HEVM_STATS_CACHE_TTL_MS,
+  });
+
+  if (hevmStatsCache.size > HEVM_STATS_CACHE_MAX_SIZE) {
+    for (const [key, entry] of hevmStatsCache.entries()) {
+      if (entry.expiresAtMs <= nowMs) hevmStatsCache.delete(key);
+    }
+    if (hevmStatsCache.size > HEVM_STATS_CACHE_MAX_SIZE) {
+      const oldestKey = hevmStatsCache.keys().next().value;
+      if (oldestKey) hevmStatsCache.delete(oldestKey);
+    }
+  }
+
+  return result;
 };

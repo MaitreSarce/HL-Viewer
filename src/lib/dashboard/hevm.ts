@@ -132,7 +132,7 @@ export const fetchHevmStatsFromApi = async (address: string): Promise<HevmApiRes
     address,
     period: { startTime: stats.startTime * 1000, endTime: stats.endTime * 1000 },
     stats: {
-      twab: Number.isFinite(stats.twabUsd) ? stats.twabUsd : null,
+      twab: Number.isFinite(stats.twabUsd) ? Number(stats.twabUsd.toFixed(2)) : null,
       volume: stats.volume.totalVolumeUsd,
       feesPaid: stats.feesPaidUsd,
       contractsCount: stats.contracts.touchedContracts,
