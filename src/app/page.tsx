@@ -707,7 +707,6 @@ export default function Home() {
                 <ZoneCard
                   title="HEVM Activity"
                   rows={[
-                    { label: "TWAB (USD)", value: formatTwabWithAge(hevm.stats.twab, hevm.stats.sinceFirstTx.days, "usd") },
                     { label: "Volume", value: formatUsd(hevm.stats.volume) },
                     { label: "Fees paid", value: formatUsd(hevm.stats.feesPaid) },
                     { label: "Different contracts", value: formatNum(hevm.stats.contractsCount) },
@@ -722,9 +721,6 @@ export default function Home() {
                   ]}
                 />
               </div>
-              <p className="text-xs text-slate-500">
-                TWAB legend: the value in parentheses is `TWAB × wallet age (days)`.
-              </p>
               <div className="grid gap-4 md:grid-cols-2">
                 <HistogramCard
                   title={`HEVM Volume (${histGranularity})`}
