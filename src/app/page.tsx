@@ -416,7 +416,13 @@ export default function Home() {
 
       const safeCall = async (url: string) => {
         try {
-          const response = await fetch(url);
+          const response = await fetch(url, {
+            cache: "no-store",
+            headers: {
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+            },
+          });
           const payload = await response.json().catch(() => ({}));
           return { ok: response.ok, payload };
         } catch (e) {
