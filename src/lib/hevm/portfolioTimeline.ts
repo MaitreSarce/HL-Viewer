@@ -29,12 +29,10 @@ const TWAB_FALLBACK_ALWAYS_ALLOWED_SYMBOLS = new Set([...STABLES, "USD", "USDXL"
 const TWAB_HIGH_PRICE_USD_THRESHOLD = 100_000;
 const TWAB_EXTREME_PRICE_USD_THRESHOLD = 1_000_000;
 const TWAB_HIGH_PRICE_MIN_AMOUNT = 0.01;
-const TWAB_FALLBACK_EVENT_HAIRCUT = 0.7;
 const HYPEREVM_RPC_URL = "https://rpc.hyperliquid.xyz/evm";
 const RPC_TIMEOUT_MS = 7000;
 const ONCHAIN_BALANCE_MAX_TOKENS = 90;
 const ONCHAIN_BALANCE_CONCURRENCY = 8;
-const ENABLE_TWAB_BASELINE_NORMALIZATION = false;
 
 const isProtocolCategory = (
   category: ClassifiedActivity["category"] | HevmProtocolAdapter["category"]
@@ -43,8 +41,8 @@ const isProtocolCategory = (
 };
 const isCustodyCategory = (
   category: ProtocolRef["category"]
-): category is "lending" | "vault" | "staking" => {
-  return category === "lending" || category === "vault" || category === "staking";
+): category is "dex" | "lending" | "vault" | "staking" => {
+  return category === "dex" || category === "lending" || category === "vault" || category === "staking";
 };
 
 const isValidAddress = (value: string) => value.startsWith("0x") && value.length === 42;
@@ -258,7 +256,7 @@ const buildUsdPositions = async (
     priceSources.push(price);
     if (!shouldAcceptTwabPrice(price, asset, timestamp, endTimestamp, mode)) continue;
     const valueUsd = row.amount * (price.priceUsd ?? 0);
-    if (!Number.isFinite(valueUsd) || valueUsd <= 0) continue;
+    if (!Number.isFinite(valueUsd) || Math.abs(valueUsd) <= EPSILON) continue;
     totalUsd += valueUsd;
     positions.push({
       protocol: row.protocol.protocolName,
@@ -431,7 +429,7 @@ const applyTransferToLedgers = (
       amount: 0,
       contract: protocolHit.counterparty,
     };
-    previous.amount = Math.max(0, previous.amount + amount);
+    previous.amount += amount;
     if (!nonZero(previous.amount)) protocolBalances.delete(protocolKey);
     else protocolBalances.set(protocolKey, previous);
     return;
@@ -442,79 +440,10 @@ const applyTransferToLedgers = (
   const protocolKey = `${protocolHit.protocolId}:${protocolHit.counterparty}:${token}`;
   const previous = protocolBalances.get(protocolKey);
   if (!previous) return;
-  previous.amount = Math.max(0, previous.amount - amount);
+  previous.amount -= amount;
+  if (previous.amount < 0 && protocolHit.category !== "lending") previous.amount = 0;
   if (!nonZero(previous.amount)) protocolBalances.delete(protocolKey);
   else protocolBalances.set(protocolKey, previous);
-};
-
-type PricedTransferDelta = {
-  timestamp: number;
-  blockNumber: number;
-  deltaUsd: number;
-  price: PriceResult;
-};
-
-const applyTransferToWalletBalance = (
-  wallet: string,
-  activity: ClassifiedActivity,
-  walletBalances: Map<string, number>
-) => {
-  const token = balanceKey(activity.token || activity.tokenSymbol || "HYPE");
-  const amount = Number.isFinite(activity.amount) ? Math.max(0, activity.amount ?? 0) : 0;
-  if (!nonZero(amount)) return;
-  const direction = resolveDirection(wallet, activity);
-  if (direction === "in") {
-    updateBalance(walletBalances, token, amount);
-    return;
-  }
-  if (direction === "out") {
-    updateBalance(walletBalances, token, -amount);
-  }
-};
-
-const buildPricedTransferDeltas = async (
-  wallet: string,
-  activities: ClassifiedActivity[],
-  indexes: ReturnType<typeof buildProtocolIndexes>,
-  endTimestamp: number,
-  priceContext: PriceContext
-) => {
-  const deltas: PricedTransferDelta[] = [];
-
-  for (const activity of activities) {
-    const direction = resolveDirection(wallet, activity);
-    if (direction !== "in" && direction !== "out") continue;
-    const protocolHit = resolveProtocolForTransfer(wallet, activity, indexes);
-    if (protocolHit && isCustodyCategory(protocolHit.category)) continue;
-
-    const token = balanceKey(activity.token || activity.tokenSymbol || "HYPE");
-    const amount = Number.isFinite(activity.amount) ? Math.max(0, activity.amount ?? 0) : 0;
-    if (!nonZero(amount)) continue;
-
-    const price = await priceContext.resolvePriceUsd(token, activity.timestamp);
-    if (!shouldAcceptTwabPrice(price, token, activity.timestamp, endTimestamp, "event")) continue;
-    if (isSuspiciousTwabTokenValuation(token, amount, price)) continue;
-    const pricedToken = String(price.token || "").trim().toUpperCase();
-    const fallbackWeight =
-      price.source === "fallback_current" &&
-      !TWAB_FALLBACK_ALWAYS_ALLOWED_SYMBOLS.has(pricedToken) &&
-      !TWAB_FALLBACK_ALWAYS_ALLOWED_SYMBOLS.has(token)
-        ? TWAB_FALLBACK_EVENT_HAIRCUT
-        : 1;
-
-    const sign = direction === "in" ? 1 : -1;
-    const deltaUsd = sign * amount * (price.priceUsd ?? 0) * fallbackWeight;
-    if (!Number.isFinite(deltaUsd) || Math.abs(deltaUsd) <= EPSILON) continue;
-
-    deltas.push({
-      timestamp: activity.timestamp,
-      blockNumber: activity.blockNumber,
-      deltaUsd,
-      price,
-    });
-  }
-
-  return deltas.sort((a, b) => (a.timestamp - b.timestamp) || (a.blockNumber - b.blockNumber));
 };
 
 export const buildPortfolioTimeline = async (
@@ -530,22 +459,61 @@ export const buildPortfolioTimeline = async (
   }
 
   const protocolIndexes = buildProtocolIndexes(wallet, transferActivities, args.adapters);
-  const reconstructedWalletBalances = new Map<string, number>();
+  const walletBalances = new Map<string, number>();
   const protocolBalances = new Map<string, { protocol: ProtocolRef; asset: string; amount: number; contract: string }>();
+  const groups = new Map<number, ClassifiedActivity[]>();
   for (const activity of transferActivities) {
-    applyTransferToLedgers(
-      wallet,
-      activity,
-      protocolIndexes,
-      reconstructedWalletBalances,
-      protocolBalances
-    );
+    const rows = groups.get(activity.timestamp) ?? [];
+    rows.push(activity);
+    groups.set(activity.timestamp, rows);
   }
-  const walletBalances = await syncCurrentWalletBalancesWithChain(wallet, reconstructedWalletBalances);
 
+  const segments: PortfolioSegment[] = [];
+  let cursorTimestamp = transferActivities[0].timestamp;
+  let cursorBlock = transferActivities[0].blockNumber;
+  let cursorSnapshot = {
+    positions: [] as Position[],
+    priceSources: [] as PriceResult[],
+    totalUsd: 0,
+  };
+
+  for (const timestamp of [...groups.keys()].sort((a, b) => a - b)) {
+    const durationSeconds = Math.max(0, timestamp - cursorTimestamp);
+    if (durationSeconds > 0) {
+      const totalUsd = Math.max(0, cursorSnapshot.totalUsd);
+      segments.push({
+        startTimestamp: cursorTimestamp,
+        endTimestamp: timestamp,
+        durationSeconds,
+        totalUsd,
+        contribution: totalUsd * durationSeconds,
+        positions: cursorSnapshot.positions,
+        priceSources: cursorSnapshot.priceSources,
+      });
+    }
+
+    const rows = groups.get(timestamp) ?? [];
+    for (const activity of rows.sort((a, b) => (a.blockNumber - b.blockNumber) || ((a.logIndex ?? 0) - (b.logIndex ?? 0)))) {
+      applyTransferToLedgers(wallet, activity, protocolIndexes, walletBalances, protocolBalances);
+      cursorBlock = Math.max(cursorBlock, activity.blockNumber);
+    }
+
+    cursorSnapshot = await buildUsdPositions(
+      walletBalances,
+      protocolBalances,
+      timestamp,
+      cursorBlock,
+      args.endTimestamp,
+      args.priceContext,
+      "event"
+    );
+    cursorTimestamp = timestamp;
+  }
+
+  const syncedWalletBalances = await syncCurrentWalletBalancesWithChain(wallet, walletBalances);
   const lastBlock = transferActivities[transferActivities.length - 1].blockNumber;
   const currentSnapshot = await buildUsdPositions(
-    walletBalances,
+    syncedWalletBalances,
     protocolBalances,
     args.endTimestamp,
     lastBlock,
@@ -554,102 +522,19 @@ export const buildPortfolioTimeline = async (
     "current"
   );
 
-  const pricedDeltas = await buildPricedTransferDeltas(
-    wallet,
-    transferActivities,
-    protocolIndexes,
-    args.endTimestamp,
-    args.priceContext
-  );
-
-  if (pricedDeltas.length === 0) {
-    const startTimestamp = transferActivities[0].timestamp;
-    const endTimestamp = Math.max(startTimestamp, args.endTimestamp);
-    const durationSeconds = Math.max(0, endTimestamp - startTimestamp);
-    return {
-      segments: [
-        {
-          startTimestamp,
-          endTimestamp,
-          durationSeconds,
-          totalUsd: currentSnapshot.totalUsd,
-          contribution: currentSnapshot.totalUsd * durationSeconds,
-          positions: currentSnapshot.positions,
-          priceSources: currentSnapshot.priceSources,
-        },
-      ],
-      currentPositions: currentSnapshot.positions,
-      currentPortfolioUsd: currentSnapshot.totalUsd,
-    };
-  }
-
-  const reverseSegments: PortfolioSegment[] = [];
-  let runningUsd = currentSnapshot.totalUsd;
-  let cursorTimestamp = Math.max(args.endTimestamp, pricedDeltas[pricedDeltas.length - 1].timestamp);
-
-  for (let index = pricedDeltas.length - 1; index >= 0; index -= 1) {
-    const row = pricedDeltas[index];
-    const startTimestamp = Math.min(cursorTimestamp, row.timestamp);
-    const endTimestamp = cursorTimestamp;
-    const durationSeconds = Math.max(0, endTimestamp - startTimestamp);
-    const totalUsd = Math.max(0, runningUsd);
-
-    reverseSegments.push({
-      startTimestamp,
+  const endTimestamp = Math.max(cursorTimestamp, args.endTimestamp);
+  const finalDurationSeconds = Math.max(0, endTimestamp - cursorTimestamp);
+  if (finalDurationSeconds > 0) {
+    const totalUsd = Math.max(0, currentSnapshot.totalUsd || cursorSnapshot.totalUsd);
+    segments.push({
+      startTimestamp: cursorTimestamp,
       endTimestamp,
-      durationSeconds,
+      durationSeconds: finalDurationSeconds,
       totalUsd,
-      contribution: totalUsd * durationSeconds,
-      positions: [],
-      priceSources: [row.price],
+      contribution: totalUsd * finalDurationSeconds,
+      positions: currentSnapshot.positions.length > 0 ? currentSnapshot.positions : cursorSnapshot.positions,
+      priceSources: currentSnapshot.priceSources.length > 0 ? currentSnapshot.priceSources : cursorSnapshot.priceSources,
     });
-
-    runningUsd -= row.deltaUsd;
-    cursorTimestamp = startTimestamp;
-  }
-
-  const firstTimestamp = pricedDeltas[0].timestamp;
-  if (cursorTimestamp > firstTimestamp) {
-    const durationSeconds = Math.max(0, cursorTimestamp - firstTimestamp);
-    const totalUsd = Math.max(0, runningUsd);
-    reverseSegments.push({
-      startTimestamp: firstTimestamp,
-      endTimestamp: cursorTimestamp,
-      durationSeconds,
-      totalUsd,
-      contribution: totalUsd * durationSeconds,
-      positions: [],
-      priceSources: [],
-    });
-  }
-
-  const baselineUsd = Math.max(0, runningUsd);
-
-  const rawSegments = reverseSegments
-    .reverse()
-    .filter((segment) => Number.isFinite(segment.durationSeconds) && segment.durationSeconds >= 0);
-
-  const segments =
-    ENABLE_TWAB_BASELINE_NORMALIZATION && baselineUsd > EPSILON
-      ? rawSegments.map((segment) => {
-          const totalUsd = Math.max(0, segment.totalUsd - baselineUsd);
-          return {
-            ...segment,
-            totalUsd,
-            contribution: totalUsd * segment.durationSeconds,
-          };
-        })
-      : rawSegments;
-
-  if (segments.length > 0) {
-    segments[segments.length - 1] = {
-      ...segments[segments.length - 1],
-      positions: currentSnapshot.positions,
-      priceSources: [
-        ...segments[segments.length - 1].priceSources,
-        ...currentSnapshot.priceSources,
-      ],
-    };
   }
 
   return {

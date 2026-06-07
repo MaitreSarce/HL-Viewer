@@ -1203,7 +1203,11 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
     ]);
     stakingRequestUsed = 2;
     const delegatedNow = abs(toFiniteNumber((stakingSummary as DelegatorSummary)?.delegated ?? 0));
-    const stakingTwab = computeStakingTwabFromDelegatorHistory(Array.isArray(history) ? history : [], endTime, delegatedNow);
+    const stakingTwab = computeStakingTwabFromDelegatorHistory(
+      Array.isArray(history) ? history : [],
+      endTime,
+      delegatedNow
+    );
     summary.totals.hypeStakingTwab = stakingTwab;
     if (stakingTwab !== null) {
       warnings.push("HYPE staking TWAB is computed from Hyperliquid staking-native delegatorHistory + delegatorSummary (multi-validator aware).");

@@ -707,6 +707,7 @@ export default function Home() {
                 <ZoneCard
                   title="HEVM Activity"
                   rows={[
+                    { label: "TWAB (USD)", value: formatTwabWithAge(hevm.stats.twab, walletAgeDays, "usd") },
                     { label: "Volume", value: formatUsd(hevm.stats.volume) },
                     { label: "Fees paid", value: formatUsd(hevm.stats.feesPaid) },
                     { label: "Different contracts", value: formatNum(hevm.stats.contractsCount) },

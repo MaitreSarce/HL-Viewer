@@ -47,6 +47,33 @@ test("TWAB simple example equals 350 USD", () => {
   assert.equal(result.twabUsd, 350);
 });
 
+test("TWAB net HEVM example includes wallet cash, LP exposure, and lending net debt", () => {
+  const day = 24 * 60 * 60;
+  const segments: PortfolioSegment[] = [
+    {
+      startTimestamp: 0,
+      endTimestamp: 181 * day,
+      durationSeconds: 181 * day,
+      totalUsd: 600,
+      contribution: 600 * 181 * day,
+      positions: [],
+      priceSources: [],
+    },
+    {
+      startTimestamp: 181 * day,
+      endTimestamp: 365 * day,
+      durationSeconds: 184 * day,
+      totalUsd: 10_100,
+      contribution: 10_100 * 184 * day,
+      positions: [],
+      priceSources: [],
+    },
+  ];
+
+  const result = calculateTwabUsd(segments);
+  assert.equal(Number(result.twabUsd.toFixed(2)), 5389.04);
+});
+
 test("tx count breakdown tracks sent/received/erc20/internal/all", () => {
   const wallet = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const activities: RawActivity[] = [

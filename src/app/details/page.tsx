@@ -81,7 +81,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="HYPE Staking TWAB"
-          explanation="Computed from Hyperliquid staking-native endpoint `delegatorHistory` (multi-validator aware). Delegate and undelegate events are replayed forward per validator, each validator balance is capped at zero, then TWAB is computed as a time-weighted average staked balance."
+          explanation="Computed from Hyperliquid staking-native endpoints `delegatorHistory` and `delegatorSummary`. Delegate and undelegate events are replayed forward per validator, each validator balance is capped at zero, then TWAB is computed as a time-weighted average staked balance."
         />
         <Metric
           name="Unit Volume / Fees / Trades"
@@ -116,7 +116,7 @@ export default function DetailsPage() {
 
         <Metric
           name="TWAB"
-          explanation="Computed as exact-time integration `sum(valueUSD * duration) / totalDuration`, rebuilt event-by-event from first activity to now. To reduce overestimation, TWAB uses a conservative valuation model based on wallet-held balances reconstructed from transfer flows (including wallet-held receipt/LST tokens) and excludes synthetic protocol-custody mirroring that can double-count some DeFi loops."
+          explanation="Computed as exact-time integration `sum(valueUSD * duration) / totalDuration`, rebuilt forward from the first HEVM activity to now. At each event, wallet balances are updated, LP/vault/staking deposits are kept as protocol exposure while held, and lending is treated as net exposure (`supplied value - borrowed value`) when borrow/withdraw flows are observed. Example: 100 USD held all year + 500 USD net lending for 181 days + 10,000 USD LP for 184 days gives `(100*365 + 500*181 + 10000*184) / 365 = 5,389.04 USD`."
         />
         <Metric
           name="Volume (USD)"
