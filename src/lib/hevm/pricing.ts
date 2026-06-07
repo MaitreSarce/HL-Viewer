@@ -9,7 +9,7 @@ const COINGECKO_HISTORY = "https://api.coingecko.com/api/v3/coins/hyperliquid/hi
 const COINGECKO_HISTORY_BASE = "https://api.coingecko.com/api/v3/coins";
 const FETCH_TIMEOUT_MS = 5000;
 
-const STABLES = new Set(["USDC", "USDT", "DAI", "USD0", "USDH", "USDHL", "USDE", "USDT0", "FDUSD", "USDP", "FEUSD"]);
+const STABLES = new Set(["USDC", "USDT", "DAI", "USD0", "USDH", "USDHL", "USDE", "USDT0", "FDUSD", "USDP", "FEUSD", "LIMUSD"]);
 const COINGECKO_SYMBOL_ID = new Map<string, string>([
   ["HYPE", "hyperliquid"],
   ["WHYPE", "hyperliquid"],
@@ -288,13 +288,6 @@ export const createPriceContext = async (): Promise<{
       return result;
     }
 
-    const tokenFallback = fallbackCurrentByToken.get(symbol);
-    if (tokenFallback && Number.isFinite(tokenFallback) && tokenFallback > 0) {
-      const result: PriceResult = { token: symbol, timestamp: ts, priceUsd: tokenFallback, source: "fallback_current" };
-      cache.set(key, result);
-      return result;
-    }
-
     if (permanentlyMissingTokens.has(symbol)) {
       pushIgnored(symbol, ts);
       const missing: PriceResult = { token: symbol, timestamp: ts, priceUsd: null, source: "missing" };
@@ -338,6 +331,13 @@ export const createPriceContext = async (): Promise<{
       } catch (error) {
         priceErrors.push({ token: symbol, timestamp: ts, source: "onchain", error: String(error) });
       }
+    }
+
+    const tokenFallback = fallbackCurrentByToken.get(symbol);
+    if (tokenFallback && Number.isFinite(tokenFallback) && tokenFallback > 0) {
+      const result: PriceResult = { token: symbol, timestamp: ts, priceUsd: tokenFallback, source: "fallback_current" };
+      cache.set(key, result);
+      return result;
     }
 
     try {

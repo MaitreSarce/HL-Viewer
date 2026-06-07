@@ -23,12 +23,14 @@ const TRANSFER_TYPES = new Set<ClassifiedActivity["type"]>([
   "internal_transfer",
 ]);
 const STABLES = new Set(["USDC", "USDT", "DAI", "USD0", "USDH", "USDHL", "USDE", "USDT0", "FDUSD", "USDP", "FEUSD"]);
+const TRUSTED_TWAB_FALLBACK_SYMBOLS = new Set(["HYPE", "WHYPE", "UETH", "USOL", "UBTC", "ETH", "SOL", "BTC"]);
 const TWAB_FALLBACK_EVENT_MAX_AGE_SECONDS = 9 * 86400;
 const INCLUDE_PROTOCOL_CUSTODY_IN_TWAB = true;
 const TWAB_FALLBACK_ALWAYS_ALLOWED_SYMBOLS = new Set([...STABLES, "USD", "USDXL"]);
 const TWAB_HIGH_PRICE_USD_THRESHOLD = 100_000;
 const TWAB_EXTREME_PRICE_USD_THRESHOLD = 1_000_000;
 const TWAB_HIGH_PRICE_MIN_AMOUNT = 0.01;
+const PROTOCOL_AWARE_TWAB_MAX_USD = 2_000;
 const HYPEREVM_RPC_URL = "https://rpc.hyperliquid.xyz/evm";
 const RPC_TIMEOUT_MS = 7000;
 const ONCHAIN_BALANCE_MAX_TOKENS = 90;
@@ -54,6 +56,26 @@ const balanceKey = (token: string) => {
   const t = (token || "HYPE").trim();
   if (!t) return "HYPE";
   return t.toUpperCase();
+};
+
+const reliablePricingAsset = (activity: ClassifiedActivity) => {
+  const token = balanceKey(activity.token || activity.tokenSymbol || "HYPE");
+  if (!isAddressAsset(token)) return token;
+
+  const symbol = balanceKey(activity.tokenSymbol || "");
+  if (!symbol) return token;
+
+  const compact = symbol.replace(/[^A-Z0-9]/g, "");
+  if (symbol.includes("/") || compact.includes("AMM") || compact.includes("POOL") || compact.includes("PAIR") || compact.includes("LP")) {
+    return token;
+  }
+  if (compact.includes("LIMUSD")) return "LIMUSD";
+  if (compact.includes("USDC") || compact.includes("USDT") || compact.includes("DAI") || compact.includes("USDE")) return "USDC";
+  if (compact.includes("WHYPE") || compact.includes("STHYPE") || compact.includes("WSTHYPE") || compact.includes("LHYPE") || compact.includes("KHYPE") || compact.includes("MHYPE")) return "HYPE";
+  if (compact.includes("UETH") || compact === "ETH") return "UETH";
+  if (compact.includes("USOL") || compact === "SOL") return "USOL";
+  if (compact.includes("UBTC") || compact === "BTC") return "UBTC";
+  return token;
 };
 
 const transferDedupeKey = (activity: ClassifiedActivity) =>
@@ -446,6 +468,141 @@ const applyTransferToLedgers = (
   else protocolBalances.set(protocolKey, previous);
 };
 
+const isReliableTwabPrice = (price: PriceResult, asset: string, amount: number) => {
+  if (price.priceUsd === null || !Number.isFinite(price.priceUsd) || price.priceUsd <= 0) return false;
+  if (price.source === "missing") return false;
+  if (price.source === "fallback_current") {
+    const pricedToken = String(price.token || "").trim().toUpperCase();
+    if (!TRUSTED_TWAB_FALLBACK_SYMBOLS.has(asset) && !TRUSTED_TWAB_FALLBACK_SYMBOLS.has(pricedToken)) return false;
+  }
+  return !isSuspiciousTwabTokenValuation(asset, amount, price);
+};
+
+const pricedExposureTransfer = async (
+  wallet: string,
+  activity: ClassifiedActivity,
+  priceContext: PriceContext
+) => {
+  const direction = resolveDirection(wallet, activity);
+  if (direction !== "in" && direction !== "out") return null;
+
+  const token = reliablePricingAsset(activity);
+  const amount = Number.isFinite(activity.amount) ? Math.max(0, activity.amount ?? 0) : 0;
+  if (!nonZero(amount)) return null;
+
+  const price = await priceContext.resolvePriceUsd(token, activity.timestamp);
+  if (!isReliableTwabPrice(price, token, amount)) {
+    return {
+      timestamp: activity.timestamp,
+      blockNumber: activity.blockNumber,
+      txHash: activity.txHash,
+      direction,
+      deltaUsd: null,
+      price,
+    };
+  }
+
+  const sign = direction === "in" ? 1 : -1;
+  const valueUsd = sign * amount * (price.priceUsd ?? 0);
+  if (!Number.isFinite(valueUsd) || Math.abs(valueUsd) <= EPSILON) return null;
+
+  return {
+    timestamp: activity.timestamp,
+    blockNumber: activity.blockNumber,
+    txHash: activity.txHash,
+    direction,
+    deltaUsd: valueUsd,
+    price,
+  };
+};
+
+const buildExposureFlowSegments = async (
+  wallet: string,
+  activities: ClassifiedActivity[],
+  _indexes: ReturnType<typeof buildProtocolIndexes>,
+  endTimestamp: number,
+  priceContext: PriceContext
+) => {
+  const txRows = new Map<string, {
+    timestamp: number;
+    blockNumber: number;
+    deltaUsd: number;
+    prices: PriceResult[];
+    rawIn: boolean;
+    rawOut: boolean;
+    unreliable: boolean;
+  }>();
+
+  for (const activity of activities) {
+    const row = await pricedExposureTransfer(wallet, activity, priceContext);
+    if (!row) continue;
+    const key = row.txHash || `${row.timestamp}:${row.blockNumber}`;
+    const previous = txRows.get(key) ?? {
+      timestamp: row.timestamp,
+      blockNumber: row.blockNumber,
+      deltaUsd: 0,
+      prices: [] as PriceResult[],
+      rawIn: false,
+      rawOut: false,
+      unreliable: false,
+    };
+    previous.timestamp = Math.min(previous.timestamp, row.timestamp);
+    previous.blockNumber = Math.min(previous.blockNumber, row.blockNumber);
+    if (row.direction === "in") previous.rawIn = true;
+    if (row.direction === "out") previous.rawOut = true;
+    if (row.deltaUsd === null) previous.unreliable = true;
+    else previous.deltaUsd += row.deltaUsd;
+    previous.prices.push(row.price);
+    txRows.set(key, previous);
+  }
+
+  const events = [...txRows.values()]
+    .filter((row) => !(row.rawIn && row.rawOut && row.unreliable))
+    .filter((row) => Number.isFinite(row.deltaUsd) && Math.abs(row.deltaUsd) > EPSILON)
+    .sort((a, b) => (a.timestamp - b.timestamp) || (a.blockNumber - b.blockNumber));
+
+  if (events.length === 0) return [] as PortfolioSegment[];
+
+  const segments: PortfolioSegment[] = [];
+  let runningUsd = 0;
+  let cursorTimestamp = events[0].timestamp;
+
+  for (const event of events) {
+    const durationSeconds = Math.max(0, event.timestamp - cursorTimestamp);
+    if (durationSeconds > 0) {
+      const totalUsd = Math.min(PROTOCOL_AWARE_TWAB_MAX_USD, Math.max(0, runningUsd));
+      segments.push({
+        startTimestamp: cursorTimestamp,
+        endTimestamp: event.timestamp,
+        durationSeconds,
+        totalUsd,
+        contribution: totalUsd * durationSeconds,
+        positions: [],
+        priceSources: event.prices,
+      });
+    }
+
+    runningUsd = Math.max(0, runningUsd + event.deltaUsd);
+    cursorTimestamp = event.timestamp;
+  }
+
+  const finalDurationSeconds = Math.max(0, endTimestamp - cursorTimestamp);
+  if (finalDurationSeconds > 0) {
+    const totalUsd = Math.min(PROTOCOL_AWARE_TWAB_MAX_USD, Math.max(0, runningUsd));
+    segments.push({
+      startTimestamp: cursorTimestamp,
+      endTimestamp,
+      durationSeconds: finalDurationSeconds,
+      totalUsd,
+      contribution: totalUsd * finalDurationSeconds,
+      positions: [],
+      priceSources: [],
+    });
+  }
+
+  return segments;
+};
+
 export const buildPortfolioTimeline = async (
   args: BuildTimelineArgs
 ): Promise<{ segments: PortfolioSegment[]; currentPositions: Position[]; currentPortfolioUsd: number }> => {
@@ -537,8 +694,16 @@ export const buildPortfolioTimeline = async (
     });
   }
 
+  const exposureSegments = await buildExposureFlowSegments(
+    wallet,
+    transferActivities,
+    protocolIndexes,
+    args.endTimestamp,
+    args.priceContext
+  );
+
   return {
-    segments,
+    segments: exposureSegments.length > 0 ? exposureSegments : segments,
     currentPositions: currentSnapshot.positions,
     currentPortfolioUsd: currentSnapshot.totalUsd,
   };
