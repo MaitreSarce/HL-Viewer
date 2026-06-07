@@ -81,7 +81,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="HYPE Staking TWAB"
-          explanation="Computed from Hyperliquid staking-native endpoints `delegatorHistory` + `delegatorSummary` (multi-validator aware). Delegation/undelegation deltas are reconstructed over time, then TWAB is computed as a time-weighted average staked balance."
+          explanation="Computed from Hyperliquid staking-native endpoint `delegatorHistory` (multi-validator aware). Delegate and undelegate events are replayed forward per validator, each validator balance is capped at zero, then TWAB is computed as a time-weighted average staked balance."
         />
         <Metric
           name="Unit Volume / Fees / Trades"

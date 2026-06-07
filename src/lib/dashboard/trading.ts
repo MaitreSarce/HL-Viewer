@@ -563,7 +563,7 @@ const computeVaultTwabUsd = (
   return twab > 0 ? twab : null;
 };
 
-const computeStakingTwabFromDelegatorHistory = (
+export const computeStakingTwabFromDelegatorHistory = (
   updates: DelegatorHistoryUpdate[],
   endTimeMs: number,
   currentDelegated: number
@@ -576,37 +576,37 @@ const computeStakingTwabFromDelegatorHistory = (
       const amount = abs(toFiniteNumber(delegate.amount ?? 0));
       if (!Number.isFinite(amount) || amount <= 0) return null;
       const isUndelegate = Boolean(delegate.isUndelegate);
-      return { t, d: isUndelegate ? -amount : amount };
+      const validator = readStringKeys(delegate as Record<string, unknown>, ["validator"]).toLowerCase();
+      return { t, validator, d: isUndelegate ? -amount : amount };
     })
-    .filter((e): e is { t: number; d: number } => e !== null)
+    .filter((e): e is { t: number; validator: string; d: number } => e !== null)
     .sort((a, b) => a.t - b.t);
 
   if (events.length === 0) return currentDelegated > 0 ? currentDelegated : null;
 
-  // Rebuild backwards from current delegated balance to support multi-validator state exactly.
-  let stake = Math.max(0, currentDelegated);
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    stake = Math.max(0, stake - events[i].d);
-  }
-  const initialStake = stake;
-
   let area = 0;
   let start = events[0].t;
   let lastT = start;
-  stake = initialStake;
+  const stakeByValidator = new Map<string, number>();
+  const totalStake = () => [...stakeByValidator.values()].reduce((sum, value) => sum + Math.max(0, value), 0);
 
   for (const e of events) {
     if (e.t > lastT) {
-      area += Math.max(0, stake) * (e.t - lastT);
+      area += totalStake() * (e.t - lastT);
       lastT = e.t;
     }
-    stake = Math.max(0, stake + e.d);
+    const validatorKey = e.validator || "unknown";
+    const nextStake = Math.max(0, (stakeByValidator.get(validatorKey) ?? 0) + e.d);
+    stakeByValidator.set(validatorKey, nextStake);
   }
 
   const end = Math.max(lastT, Math.floor(endTimeMs));
-  if (end > lastT) area += Math.max(0, stake) * (end - lastT);
+  if (end > lastT) area += totalStake() * (end - lastT);
   const duration = Math.max(0, end - start);
-  if (duration <= 0) return stake > 0 ? stake : null;
+  if (duration <= 0) {
+    const stake = totalStake();
+    return stake > 0 ? stake : currentDelegated > 0 ? currentDelegated : null;
+  }
   const twab = area / duration;
   return twab > 0 ? twab : null;
 };

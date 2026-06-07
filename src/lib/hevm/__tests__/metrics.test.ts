@@ -9,6 +9,7 @@ import {
 } from "@/lib/hevm/metrics";
 import { createPriceContext } from "@/lib/hevm/pricing";
 import { ClassifiedActivity, PortfolioSegment, RawActivity } from "@/lib/hevm/types";
+import { computeStakingTwabFromDelegatorHistory } from "@/lib/dashboard/trading";
 
 test("TWAB simple example equals 350 USD", () => {
   const day = 24 * 60 * 60;
@@ -327,4 +328,63 @@ test("unknown token price is ignored and does not crash", async () => {
   const price = await context.resolvePriceUsd("SOME_UNKNOWN_TOKEN_123456", Math.floor(Date.now() / 1000));
   assert.equal(price.source, "missing");
   assert.equal(ignoredTokens.length > 0, true);
+});
+
+test("staking TWAB applies undelegates forward without inflating historical stake", () => {
+  const day = 24 * 60 * 60 * 1000;
+  const validator = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const updates = [
+    {
+      time: day,
+      delta: {
+        delegate: {
+          validator,
+          amount: "100",
+          isUndelegate: false,
+        },
+      },
+    },
+    {
+      time: 6 * day,
+      delta: {
+        delegate: {
+          validator,
+          amount: "40",
+          isUndelegate: true,
+        },
+      },
+    },
+  ];
+
+  const twab = computeStakingTwabFromDelegatorHistory(updates, 11 * day, 60);
+  assert.equal(twab, 80);
+});
+
+test("staking TWAB caps undelegates per validator", () => {
+  const day = 24 * 60 * 60 * 1000;
+  const updates = [
+    {
+      time: day,
+      delta: {
+        delegate: {
+          validator: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          amount: "10",
+          isUndelegate: false,
+        },
+      },
+    },
+    {
+      time: 2 * day,
+      delta: {
+        delegate: {
+          validator: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          amount: "10",
+          isUndelegate: true,
+        },
+      },
+    },
+  ];
+
+  const twab = computeStakingTwabFromDelegatorHistory(updates, 3 * day, 10);
+  assert.equal(twab, 10);
 });
