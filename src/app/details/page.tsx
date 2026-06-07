@@ -118,6 +118,13 @@ export default function DetailsPage() {
           name="TWAB"
           explanation="Computed as exact-time integration `sum(valueUSD * duration) / totalDuration`, rebuilt forward from the first HEVM activity to now. At each event, wallet balances are updated, LP/vault/staking deposits are kept as protocol exposure while held, and lending is treated as net exposure (`supplied value - borrowed value`) when borrow/withdraw flows are observed. Example: 100 USD held all year + 500 USD net lending for 181 days + 10,000 USD LP for 184 days gives `(100*365 + 500*181 + 10000*184) / 365 = 5,389.04 USD`."
         />
+        <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+          HEVM TWAB is a best-effort conservative estimate. Open LP positions may temporarily lower the TWAB because
+          deposited assets leave the wallet and the LP position may not always be fully valued until it is closed or
+          partially withdrawn. Lending is treated as net exposure when possible, receipt/vault/LST/LP tokens are valued
+          only when reliable pricing or conversion data exists, and tokens without reliable historical prices are ignored
+          to avoid inflating the result.
+        </p>
         <Metric
           name="Volume (USD)"
           explanation="Sum of outgoing account tx + outgoing token transfers, valued at historical USD price at transfer time. Native and HYPE-like assets use historical HYPE/USD (CoinGecko); stablecoins are counted at nominal USD; other tokens use contract historical series when available."
