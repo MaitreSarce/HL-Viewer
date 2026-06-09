@@ -106,13 +106,6 @@ const selectConcreteBridgeTransfers = (activities: ClassifiedActivity[]) =>
     )
   );
 
-const hasBridgeSignal = (activities: ClassifiedActivity[]) =>
-  selectConcreteBridgeTransfers(activities).length > 0 ||
-  activities.some((activity) =>
-    activity.type === "bridge_event" &&
-      (isCoreSystemAddress(activity.from) || isCoreSystemAddress(activity.to))
-  );
-
 const pickPrimaryCategory = (activities: ClassifiedActivity[], bridgeSignal: boolean) => {
   if (bridgeSignal) return "bridge" as const;
   if (activities.some((activity) => activity.category === "dex")) return "dex" as const;

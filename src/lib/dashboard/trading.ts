@@ -585,7 +585,7 @@ export const computeStakingTwabFromDelegatorHistory = (
   if (events.length === 0) return currentDelegated > 0 ? currentDelegated : null;
 
   let area = 0;
-  let start = events[0].t;
+  const start = events[0].t;
   let lastT = start;
   const stakeByValidator = new Map<string, number>();
   const totalStake = () => [...stakeByValidator.values()].reduce((sum, value) => sum + Math.max(0, value), 0);

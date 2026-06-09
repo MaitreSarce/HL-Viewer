@@ -20,6 +20,16 @@ const COINGECKO_SYMBOL_ID = new Map<string, string>([
   ["ETH", "ethereum"],
   ["BTC", "bitcoin"],
 ]);
+const LEGACY_VOLUME_COINGECKO_SYMBOL_ID = new Map<string, string>([
+  ["HYPE", "hyperliquid"],
+  ["WHYPE", "hyperliquid"],
+  ["USOL", "unit-solana"],
+  ["UETH", "unit-ethereum"],
+  ["UBTC", "unit-bitcoin"],
+  ["SOL", "solana"],
+  ["ETH", "ethereum"],
+  ["BTC", "bitcoin"],
+]);
 const HYPERLIQUID_CANDLE_SYMBOLS = new Map<string, string>([
   ["HYPE", "HYPE"],
   ["WHYPE", "HYPE"],
@@ -71,9 +81,13 @@ const isStableLikeSymbol = (symbol: string) => {
   return alias === "USDT0" || alias === "USDT" || alias === "USDC" || alias === "DAI" || alias === "USDE";
 };
 
-const toCoinKeys = (token: string) => {
+const toCoinKeys = (token: string, legacyVolumeMode = false) => {
   const t = normalizeToken(token);
   if (t === "HYPE" || t === "WHYPE") return ["coingecko:hyperliquid", "hyperevm:0x5555555555555555555555555555555555555555"];
+  if (legacyVolumeMode) {
+    if (isAddress(t)) return [`hyperevm:${t.toLowerCase()}`, `hyperliquid:${t.toLowerCase()}`];
+    return [`coingecko:${t.toLowerCase()}`, `symbol:${t.toLowerCase()}`];
+  }
   if (t === "UETH") return ["coingecko:ethereum"];
   if (t === "USOL") return ["coingecko:solana"];
   if (t === "UBTC") return ["coingecko:bitcoin"];
@@ -81,8 +95,16 @@ const toCoinKeys = (token: string) => {
   return [`coingecko:${t.toLowerCase()}`, `symbol:${t.toLowerCase()}`];
 };
 
-const parseDefiLlamaPrice = (payload: any, coinKey: string): number | null => {
-  const row = payload?.coins?.[coinKey];
+type PriceError = {
+  token?: string;
+  timestamp?: number;
+  source: string;
+  error: string;
+};
+
+const parseDefiLlamaPrice = (payload: unknown, coinKey: string): number | null => {
+  const coins = asRecord(asRecord(payload)?.coins);
+  const row = asRecord(coins?.[coinKey]);
   const p = typeof row?.price === "number" ? row.price : null;
   return p && Number.isFinite(p) && p > 0 ? p : null;
 };
@@ -95,14 +117,20 @@ const toCoinGeckoDateParam = (timestampSec: number) => {
   return `${day}-${month}-${year}`;
 };
 
-export const createPriceContext = async (): Promise<{
+type PriceContextOptions = {
+  legacyVolumeMode?: boolean;
+};
+
+export const createPriceContext = async (options: PriceContextOptions = {}): Promise<{
   context: PriceContext;
   warmup: (entries: Array<{ token: string; timestamp: number }>) => Promise<void>;
   ignoredTokens: Array<{ token: string; timestamp: number }>;
-  priceErrors: any[];
+  priceErrors: PriceError[];
 }> => {
+  const legacyVolumeMode = options.legacyVolumeMode === true;
+  const symbolIdMap = legacyVolumeMode ? LEGACY_VOLUME_COINGECKO_SYMBOL_ID : COINGECKO_SYMBOL_ID;
   const ignoredTokens: Array<{ token: string; timestamp: number }> = [];
-  const priceErrors: any[] = [];
+  const priceErrors: PriceError[] = [];
   const cache = new Map<string, PriceResult>();
   const ignoredSet = new Set<string>();
   const permanentlyMissingTokens = new Set<string>();
@@ -263,7 +291,7 @@ export const createPriceContext = async (): Promise<{
   };
 
   const resolveViaDefiLlama = async (token: string, timestamp: number): Promise<PriceResult | null> => {
-    for (const coinKey of toCoinKeys(token)) {
+    for (const coinKey of toCoinKeys(token, legacyVolumeMode)) {
       const payload = await safeFetchJson(`${DEFILLAMA_HIST}/${timestamp}/${encodeURIComponent(coinKey)}`);
       const price = payload ? parseDefiLlamaPrice(payload, coinKey) : null;
       if (price !== null) {
@@ -361,10 +389,12 @@ export const createPriceContext = async (): Promise<{
       pricedTokenAttempts.add(symbol);
     }
 
-    const hyperliquidHistorical = await resolveViaHyperliquidCandles(symbol, ts);
-    if (hyperliquidHistorical) {
-      cache.set(key, hyperliquidHistorical);
-      return hyperliquidHistorical;
+    if (!legacyVolumeMode) {
+      const hyperliquidHistorical = await resolveViaHyperliquidCandles(symbol, ts);
+      if (hyperliquidHistorical) {
+        cache.set(key, hyperliquidHistorical);
+        return hyperliquidHistorical;
+      }
     }
 
     const historical = await resolveViaDefiLlama(symbol, ts);
@@ -373,7 +403,7 @@ export const createPriceContext = async (): Promise<{
       return historical;
     }
 
-    const coingeckoId = COINGECKO_SYMBOL_ID.get(symbol);
+    const coingeckoId = symbolIdMap.get(symbol);
     if (coingeckoId) {
       try {
         const dateParam = toCoinGeckoDateParam(ts);
@@ -415,7 +445,7 @@ export const createPriceContext = async (): Promise<{
         }
       }
 
-      for (const coinKey of toCoinKeys(symbol)) {
+      for (const coinKey of toCoinKeys(symbol, legacyVolumeMode)) {
         const payload = await safeFetchJson(`${DEFILLAMA_COINS_CURRENT}/${encodeURIComponent(coinKey)}`);
         const price = payload ? parseDefiLlamaPrice(payload, coinKey) : null;
         if (price !== null) {
@@ -448,10 +478,10 @@ export const createPriceContext = async (): Promise<{
       dedup.set(`${token}:${timestamp}`, { token, timestamp });
     }
 
-    const sample = [...dedup.values()].slice(0, 2000);
+    const sample = [...dedup.values()].slice(0, legacyVolumeMode ? 500 : 2000);
     if (sample.length === 0) return;
 
-    const coins = [...new Set(sample.flatMap((x) => toCoinKeys(x.token)))];
+    const coins = [...new Set(sample.flatMap((x) => toCoinKeys(x.token, legacyVolumeMode)))];
     const timestamps = [...new Set(sample.map((x) => x.timestamp))];
 
     const payload = await safeFetchJson(DEFILLAMA_BATCH_HIST, {
@@ -468,7 +498,7 @@ export const createPriceContext = async (): Promise<{
       const ts = Number(row?.timestamp ?? 0);
       if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(ts) || ts <= 0) continue;
       for (const sampleEntry of sample) {
-        if (!toCoinKeys(sampleEntry.token).includes(coinKey)) continue;
+        if (!toCoinKeys(sampleEntry.token, legacyVolumeMode).includes(coinKey)) continue;
         const key = `${sampleEntry.token}:${sampleEntry.timestamp}`;
         if (cache.has(key)) continue;
         cache.set(key, {
@@ -488,3 +518,5 @@ export const createPriceContext = async (): Promise<{
     priceErrors,
   };
 };
+
+export const createLegacyVolumePriceContext = () => createPriceContext({ legacyVolumeMode: true });

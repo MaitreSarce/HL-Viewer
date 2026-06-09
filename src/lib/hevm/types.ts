@@ -163,7 +163,7 @@ export type HevmDashboardStats = {
     ignoredTokens: Array<{ token: string; timestamp: number }>;
     unknownContracts: string[];
     unclassifiedActivities: RawActivity[];
-    priceErrors: any[];
+    priceErrors: Array<{ token?: string; timestamp?: number; source: string; error: string }>;
     dataSourcesUsed: string[];
     confidenceScore: number;
     volumeBreakdownByCategory: Record<string, number>;

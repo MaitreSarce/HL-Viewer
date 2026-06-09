@@ -11,11 +11,10 @@ import {
   calculateWalletAge,
 } from "@/lib/hevm/metrics";
 import { buildPortfolioTimeline } from "@/lib/hevm/portfolioTimeline";
-import { createPriceContext } from "@/lib/hevm/pricing";
+import { createLegacyVolumePriceContext, createPriceContext } from "@/lib/hevm/pricing";
 import { fetchProtocolRegistry } from "@/lib/hevm/protocolRegistry";
 import { ClassifiedActivity, HevmDashboardStats, RawActivity } from "@/lib/hevm/types";
 
-const HYPEREVMSCAN_ADDRESS_URL = "https://hyperevmscan.io/address";
 const HYPEREVMSCAN_TXS_URL = "https://hyperevmscan.io/txs";
 const FETCH_TIMEOUT_MS = 6000;
 const TWAB_SNAPSHOT_GRANULARITY_SECONDS = 3600;
@@ -64,25 +63,11 @@ const safe = async <T>(fn: () => Promise<T>, fallback: T): Promise<T> => {
   }
 };
 
-const fetchExplorerTxTotal = async (wallet: string): Promise<number> => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const response = await fetch(`${HYPEREVMSCAN_ADDRESS_URL}/${wallet}`, {
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    if (!response.ok) return 0;
-    const html = await response.text();
-    const match = html.match(/Transactions:\s*([0-9,]+)/i);
-    if (!match) return 0;
-    const n = Number.parseInt(match[1].replace(/,/g, ""), 10);
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  } catch {
-    return 0;
-  } finally {
-    clearTimeout(timeout);
-  }
+const buildLegacyVolumeActivities = (activities: ClassifiedActivity[]) => {
+  return activities.filter((activity) => {
+    const method = (activity.methodId || "").toLowerCase();
+    return !(activity.category === "dex" && method === "0xac9650d8");
+  });
 };
 
 const parseExplorerTxTotalFromHtml = (html: string) => {
@@ -225,17 +210,33 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
     undefined
   );
 
+  const {
+    context: volumePriceContext,
+    warmup: warmupVolumePrices,
+  } = await createLegacyVolumePriceContext();
+  const volumeClassified = buildLegacyVolumeActivities(classified);
+  await safe(
+    () =>
+      warmupVolumePrices(
+        volumeClassified.map((activity) => ({
+          token: activity.token || "HYPE",
+          timestamp: activity.timestamp,
+        }))
+      ),
+    undefined
+  );
+
   const adapterById = new Map(adapters.map((adapter) => [adapter.id, adapter]));
-  const volume = await calculateVolumeUsd(classified, async (activity) => {
+  const volume = await calculateVolumeUsd(volumeClassified, async (activity) => {
     const adapter = adapterById.get(activity.protocolId);
     if (!adapter) return 0;
-    return adapter.getVolumeUsd(activity, priceContext);
+    return adapter.getVolumeUsd(activity, volumePriceContext);
   }, wallet);
 
-  const bridge = await calculateBridgeVolume(classified, async (activity) => {
+  const bridge = await calculateBridgeVolume(volumeClassified, async (activity) => {
     const adapter = adapterById.get(activity.protocolId);
     if (!adapter) return 0;
-    return adapter.getVolumeUsd(activity, priceContext);
+    return adapter.getVolumeUsd(activity, volumePriceContext);
   }, wallet);
 
   const timeline = await safe(
