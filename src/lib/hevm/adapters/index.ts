@@ -61,7 +61,7 @@ const makeContractKeywordCategory = (
   activity: RawActivity
 ): HevmProtocolAdapter["category"] | null => {
   const method = (activity.methodId || "").toLowerCase();
-  if (["0x38ed1739", "0x18cbafe5", "0x7ff36ab5"].includes(method)) return "dex";
+  if (["0x38ed1739", "0x18cbafe5", "0x7ff36ab5", "0x5c11d795", "0xac9650d8"].includes(method)) return "dex";
   if (["0x617ba037", "0x852a12e3", "0x69328dec"].includes(method)) return "lending";
   if (["0xa694fc3a", "0x2e1a7d4d"].includes(method)) return "vault";
   if (["0xa694fc3a", "0x3ccfd60b", "0x9e281a98"].includes(method)) return "staking";
@@ -108,7 +108,7 @@ export const dexAdapter: HevmProtocolAdapter = {
   contracts: [],
   classifyActivity(activity) {
     const method = (activity.methodId || "").toLowerCase();
-    if (["0x38ed1739", "0x18cbafe5", "0x7ff36ab5", "0x5c11d795"].includes(method)) {
+    if (["0x38ed1739", "0x18cbafe5", "0x7ff36ab5", "0x5c11d795", "0xac9650d8"].includes(method)) {
       return [classify(activity, this, 0.9)];
     }
     const nameHint = (activity.contractAddress || activity.to || "").toLowerCase();

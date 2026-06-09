@@ -116,14 +116,14 @@ export default function DetailsPage() {
 
         <Metric
           name="TWAB"
-          explanation="Computed as exact-time integration `sum(valueUSD * duration) / totalDuration` using the protocol-aware conservative flow model. Transfers are grouped by transaction, reliable USD entries are added, reliable USD exits are subtracted, partially priced bidirectional txs are ignored, and the reconstructed value is clamped to a conservative 2,000 USD ceiling before contributing to TWAB. This intentionally avoids fake long-lived balances from swaps, LP mints, bridge/receipt tokens, or current-price fallbacks."
+          explanation="Computed as exact-time integration `sum(valueUSD * duration) / totalDuration` using the protocol-aware reliable flow model. Transfers are grouped by transaction, reliable USD entries are added, reliable USD exits are subtracted, and partially priced bidirectional txs are ignored. HYPE is valued with historical Hyperliquid candles when available, Unit assets use their underlying historical prices, and current-price fallbacks are only used for recognized liquid assets when no historical source is available."
         />
         <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
           HEVM TWAB is a best-effort conservative estimate. Open LP positions may temporarily lower the TWAB because
           deposited assets leave the wallet and the LP position may not always be fully valued until it is closed or
           partially withdrawn. Lending is treated as net exposure when possible, receipt/vault/LST/LP tokens are valued
-          only when reliable pricing or conversion data exists, tokens without reliable prices are ignored, and the TWAB
-          value is capped conservatively to avoid inflated results from partially understood DeFi flows.
+          only when reliable pricing or conversion data exists, and tokens without reliable prices are ignored to avoid
+          inflated results from partially understood DeFi flows.
         </p>
         <Metric
           name="Volume (USD)"

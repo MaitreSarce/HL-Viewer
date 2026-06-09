@@ -13,12 +13,16 @@ const STABLES = new Set(["USDC", "USDT", "DAI", "USD0", "USDH", "USDHL", "USDE",
 const COINGECKO_SYMBOL_ID = new Map<string, string>([
   ["HYPE", "hyperliquid"],
   ["WHYPE", "hyperliquid"],
-  ["USOL", "unit-solana"],
-  ["UETH", "unit-ethereum"],
-  ["UBTC", "unit-bitcoin"],
+  ["USOL", "solana"],
+  ["UETH", "ethereum"],
+  ["UBTC", "bitcoin"],
   ["SOL", "solana"],
   ["ETH", "ethereum"],
   ["BTC", "bitcoin"],
+]);
+const HYPERLIQUID_CANDLE_SYMBOLS = new Map<string, string>([
+  ["HYPE", "HYPE"],
+  ["WHYPE", "HYPE"],
 ]);
 
 type HyperliquidSpotContext = {
@@ -70,6 +74,9 @@ const isStableLikeSymbol = (symbol: string) => {
 const toCoinKeys = (token: string) => {
   const t = normalizeToken(token);
   if (t === "HYPE" || t === "WHYPE") return ["coingecko:hyperliquid", "hyperevm:0x5555555555555555555555555555555555555555"];
+  if (t === "UETH") return ["coingecko:ethereum"];
+  if (t === "USOL") return ["coingecko:solana"];
+  if (t === "UBTC") return ["coingecko:bitcoin"];
   if (isAddress(t)) return [`hyperevm:${t.toLowerCase()}`, `hyperliquid:${t.toLowerCase()}`];
   return [`coingecko:${t.toLowerCase()}`, `symbol:${t.toLowerCase()}`];
 };
@@ -103,6 +110,7 @@ export const createPriceContext = async (): Promise<{
   const aliasByToken = new Map<string, string>();
   const addressToSymbol = new Map<string, string>();
   const pricedTokenAttempts = new Set<string>();
+  const hyperliquidCandleHistory = new Map<string, Promise<Map<number, number>>>();
   const maxDistinctTokenLookups = 120;
   let hyperliquidContextPromise: Promise<HyperliquidSpotContext | null> | null = null;
 
@@ -265,6 +273,53 @@ export const createPriceContext = async (): Promise<{
     return null;
   };
 
+  const getHyperliquidDailyCandles = (coin: string) => {
+    if (hyperliquidCandleHistory.has(coin)) return hyperliquidCandleHistory.get(coin)!;
+    const promise = (async () => {
+      const startTime = Date.UTC(2024, 0, 1);
+      const endTime = Date.now() + 86400000;
+      const prices = new Map<number, number>();
+      const payload = await safeFetchJson(HYPERLIQUID_INFO_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "candleSnapshot",
+          req: {
+            coin,
+            interval: "1d",
+            startTime,
+            endTime,
+          },
+        }),
+      });
+      const candles = Array.isArray(payload) ? payload : [];
+      for (const candle of candles) {
+        const t = Math.floor(Number(candle?.t ?? 0) / 1000);
+        const close = Number(candle?.c ?? 0);
+        if (!Number.isFinite(t) || t <= 0 || !Number.isFinite(close) || close <= 0) continue;
+        prices.set(bucketTimestamp(t), close);
+      }
+      return prices;
+    })();
+    hyperliquidCandleHistory.set(coin, promise);
+    return promise;
+  };
+
+  const resolveViaHyperliquidCandles = async (token: string, timestamp: number): Promise<PriceResult | null> => {
+    const coin = HYPERLIQUID_CANDLE_SYMBOLS.get(token);
+    if (!coin) return null;
+    const dayStart = bucketTimestamp(timestamp);
+    const prices = await getHyperliquidDailyCandles(coin);
+    let close = prices.get(dayStart) ?? null;
+    if (close === null) {
+      const prior = [...prices.keys()].filter((t) => t <= dayStart).sort((a, b) => b - a)[0];
+      close = prior ? prices.get(prior) ?? null : null;
+    }
+    const priceUsd = Number(close ?? 0);
+    if (!Number.isFinite(priceUsd) || priceUsd <= 0) return null;
+    return { token, timestamp: dayStart, priceUsd, source: "onchain" };
+  };
+
   const resolvePriceUsd = async (token: string, timestamp: number): Promise<PriceResult> => {
     await seedHyperliquidFallbacks();
 
@@ -304,6 +359,12 @@ export const createPriceContext = async (): Promise<{
         return missing;
       }
       pricedTokenAttempts.add(symbol);
+    }
+
+    const hyperliquidHistorical = await resolveViaHyperliquidCandles(symbol, ts);
+    if (hyperliquidHistorical) {
+      cache.set(key, hyperliquidHistorical);
+      return hyperliquidHistorical;
     }
 
     const historical = await resolveViaDefiLlama(symbol, ts);
@@ -387,7 +448,7 @@ export const createPriceContext = async (): Promise<{
       dedup.set(`${token}:${timestamp}`, { token, timestamp });
     }
 
-    const sample = [...dedup.values()].slice(0, 500);
+    const sample = [...dedup.values()].slice(0, 2000);
     if (sample.length === 0) return;
 
     const coins = [...new Set(sample.flatMap((x) => toCoinKeys(x.token)))];

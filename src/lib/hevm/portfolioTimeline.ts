@@ -23,14 +23,12 @@ const TRANSFER_TYPES = new Set<ClassifiedActivity["type"]>([
   "internal_transfer",
 ]);
 const STABLES = new Set(["USDC", "USDT", "DAI", "USD0", "USDH", "USDHL", "USDE", "USDT0", "FDUSD", "USDP", "FEUSD"]);
-const TRUSTED_TWAB_FALLBACK_SYMBOLS = new Set(["HYPE", "WHYPE", "UETH", "USOL", "UBTC", "ETH", "SOL", "BTC"]);
 const TWAB_FALLBACK_EVENT_MAX_AGE_SECONDS = 9 * 86400;
 const INCLUDE_PROTOCOL_CUSTODY_IN_TWAB = true;
 const TWAB_FALLBACK_ALWAYS_ALLOWED_SYMBOLS = new Set([...STABLES, "USD", "USDXL"]);
 const TWAB_HIGH_PRICE_USD_THRESHOLD = 100_000;
 const TWAB_EXTREME_PRICE_USD_THRESHOLD = 1_000_000;
 const TWAB_HIGH_PRICE_MIN_AMOUNT = 0.01;
-const PROTOCOL_AWARE_TWAB_MAX_USD = 2_000;
 const HYPEREVM_RPC_URL = "https://rpc.hyperliquid.xyz/evm";
 const RPC_TIMEOUT_MS = 7000;
 const ONCHAIN_BALANCE_MAX_TOKENS = 90;
@@ -90,6 +88,16 @@ const transferDedupeKey = (activity: ClassifiedActivity) =>
     activity.logIndex ?? "",
     activity.traceId ?? "",
     activity.direction ?? "",
+  ].join("|");
+
+const exposureDedupeKey = (wallet: string, activity: ClassifiedActivity) =>
+  [
+    activity.txHash,
+    normalizeAddress(activity.from || ""),
+    normalizeAddress(activity.to || ""),
+    reliablePricingAsset(activity),
+    activity.amountRaw || String(activity.amount ?? ""),
+    resolveDirection(wallet, activity),
   ].join("|");
 
 const dedupeTransferActivities = (activities: ClassifiedActivity[]) => {
@@ -470,17 +478,14 @@ const applyTransferToLedgers = (
 
 const isReliableTwabPrice = (price: PriceResult, asset: string, amount: number) => {
   if (price.priceUsd === null || !Number.isFinite(price.priceUsd) || price.priceUsd <= 0) return false;
-  if (price.source === "missing") return false;
-  if (price.source === "fallback_current") {
-    const pricedToken = String(price.token || "").trim().toUpperCase();
-    if (!TRUSTED_TWAB_FALLBACK_SYMBOLS.has(asset) && !TRUSTED_TWAB_FALLBACK_SYMBOLS.has(pricedToken)) return false;
-  }
+  if (price.source === "missing" || price.source === "fallback_current") return false;
   return !isSuspiciousTwabTokenValuation(asset, amount, price);
 };
 
 const pricedExposureTransfer = async (
   wallet: string,
   activity: ClassifiedActivity,
+  indexes: ReturnType<typeof buildProtocolIndexes>,
   priceContext: PriceContext
 ) => {
   const direction = resolveDirection(wallet, activity);
@@ -499,6 +504,7 @@ const pricedExposureTransfer = async (
       direction,
       deltaUsd: null,
       price,
+      protocolCategory: resolveProtocolForTransfer(wallet, activity, indexes)?.category ?? null,
     };
   }
 
@@ -513,38 +519,65 @@ const pricedExposureTransfer = async (
     direction,
     deltaUsd: valueUsd,
     price,
+    protocolCategory: resolveProtocolForTransfer(wallet, activity, indexes)?.category ?? null,
   };
 };
 
 const buildExposureFlowSegments = async (
   wallet: string,
   activities: ClassifiedActivity[],
+  allActivities: ClassifiedActivity[],
   _indexes: ReturnType<typeof buildProtocolIndexes>,
   endTimestamp: number,
-  priceContext: PriceContext
+  priceContext: PriceContext,
+  currentPortfolioUsd: number
 ) => {
+  const txMeta = new Map<string, { initiatedContractCall: boolean }>();
+  for (const activity of allActivities) {
+    const from = normalizeAddress(activity.from || "");
+    const to = normalizeAddress(activity.to || "");
+    if (activity.txHash && from === wallet && isValidAddress(to) && to !== wallet) {
+      const previous = txMeta.get(activity.txHash) ?? { initiatedContractCall: false };
+      previous.initiatedContractCall = previous.initiatedContractCall || activity.type === "normal_tx" || Boolean(activity.methodId);
+      txMeta.set(activity.txHash, previous);
+    }
+  }
+
   const txRows = new Map<string, {
+    txHash: string;
     timestamp: number;
     blockNumber: number;
     deltaUsd: number;
     prices: PriceResult[];
+    assets: Set<string>;
     rawIn: boolean;
     rawOut: boolean;
     unreliable: boolean;
+    dexFlow: boolean;
+    whypeContractIn: boolean;
   }>();
+  const exposureSeen = new Set<string>();
 
   for (const activity of activities) {
-    const row = await pricedExposureTransfer(wallet, activity, priceContext);
+    const dedupeKey = exposureDedupeKey(wallet, activity);
+    if (exposureSeen.has(dedupeKey)) continue;
+    exposureSeen.add(dedupeKey);
+
+    const row = await pricedExposureTransfer(wallet, activity, _indexes, priceContext);
     if (!row) continue;
     const key = row.txHash || `${row.timestamp}:${row.blockNumber}`;
     const previous = txRows.get(key) ?? {
+      txHash: key,
       timestamp: row.timestamp,
       blockNumber: row.blockNumber,
       deltaUsd: 0,
       prices: [] as PriceResult[],
+      assets: new Set<string>(),
       rawIn: false,
       rawOut: false,
       unreliable: false,
+      dexFlow: false,
+      whypeContractIn: false,
     };
     previous.timestamp = Math.min(previous.timestamp, row.timestamp);
     previous.blockNumber = Math.min(previous.blockNumber, row.blockNumber);
@@ -552,26 +585,47 @@ const buildExposureFlowSegments = async (
     if (row.direction === "out") previous.rawOut = true;
     if (row.deltaUsd === null) previous.unreliable = true;
     else previous.deltaUsd += row.deltaUsd;
+    if (row.protocolCategory === "dex") previous.dexFlow = true;
+    if (
+      row.direction === "in" &&
+      activity.type === "erc20_transfer" &&
+      reliablePricingAsset(activity) === "HYPE" &&
+      balanceKey(activity.tokenSymbol || "") === "WHYPE" &&
+      isValidAddress(normalizeAddress(activity.from || "")) &&
+      normalizeAddress(activity.from || "") !== wallet
+    ) {
+      previous.whypeContractIn = true;
+    }
     previous.prices.push(row.price);
+    previous.assets.add(row.price.token);
     txRows.set(key, previous);
   }
 
   const events = [...txRows.values()]
-    .filter((row) => !(row.rawIn && row.rawOut && row.unreliable))
+    .filter((row) => !row.dexFlow)
+    .filter((row) => !(row.rawIn && row.rawOut && row.unreliable && row.deltaUsd > 0))
+    .filter((row) => {
+      if (!row.rawIn || row.rawOut || row.deltaUsd <= 0) return true;
+      const meta = txMeta.get(row.txHash);
+      const assets = [...row.assets].map((asset) => asset.toUpperCase());
+      if (row.whypeContractIn && assets.every((asset) => asset === "HYPE" || asset === "WHYPE")) return false;
+      if (!meta?.initiatedContractCall) return true;
+      return !(row.dexFlow && assets.every((asset) => asset === "HYPE" || asset === "WHYPE"));
+    })
     .filter((row) => Number.isFinite(row.deltaUsd) && Math.abs(row.deltaUsd) > EPSILON)
     .sort((a, b) => (a.timestamp - b.timestamp) || (a.blockNumber - b.blockNumber));
 
   if (events.length === 0) return [] as PortfolioSegment[];
 
-  const segments: PortfolioSegment[] = [];
+  const forwardSegments: PortfolioSegment[] = [];
   let runningUsd = 0;
   let cursorTimestamp = events[0].timestamp;
 
   for (const event of events) {
     const durationSeconds = Math.max(0, event.timestamp - cursorTimestamp);
     if (durationSeconds > 0) {
-      const totalUsd = Math.min(PROTOCOL_AWARE_TWAB_MAX_USD, Math.max(0, runningUsd));
-      segments.push({
+      const totalUsd = Math.max(0, runningUsd);
+      forwardSegments.push({
         startTimestamp: cursorTimestamp,
         endTimestamp: event.timestamp,
         durationSeconds,
@@ -588,8 +642,8 @@ const buildExposureFlowSegments = async (
 
   const finalDurationSeconds = Math.max(0, endTimestamp - cursorTimestamp);
   if (finalDurationSeconds > 0) {
-    const totalUsd = Math.min(PROTOCOL_AWARE_TWAB_MAX_USD, Math.max(0, runningUsd));
-    segments.push({
+    const totalUsd = Math.max(0, runningUsd);
+    forwardSegments.push({
       startTimestamp: cursorTimestamp,
       endTimestamp,
       durationSeconds: finalDurationSeconds,
@@ -600,7 +654,41 @@ const buildExposureFlowSegments = async (
     });
   }
 
-  return segments;
+  const reverseSegments: PortfolioSegment[] = [];
+  let reverseUsd = Math.max(0, currentPortfolioUsd);
+  let reverseCursor = endTimestamp;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    const durationSeconds = Math.max(0, reverseCursor - event.timestamp);
+    if (durationSeconds > 0) {
+      reverseSegments.push({
+        startTimestamp: event.timestamp,
+        endTimestamp: reverseCursor,
+        durationSeconds,
+        totalUsd: Math.max(0, reverseUsd),
+        contribution: Math.max(0, reverseUsd) * durationSeconds,
+        positions: [],
+        priceSources: event.prices,
+      });
+    }
+    reverseUsd = Math.max(0, reverseUsd - event.deltaUsd);
+    reverseCursor = event.timestamp;
+  }
+
+  const reverseByInterval = new Map(
+    reverseSegments.map((segment) => [`${segment.startTimestamp}:${segment.endTimestamp}`, segment.totalUsd])
+  );
+
+  return forwardSegments.map((segment) => {
+    const reverseValue = reverseByInterval.get(`${segment.startTimestamp}:${segment.endTimestamp}`);
+    if (reverseValue === undefined) return segment;
+    const totalUsd = Math.min(segment.totalUsd, reverseValue);
+    return {
+      ...segment,
+      totalUsd,
+      contribution: totalUsd * segment.durationSeconds,
+    };
+  });
 };
 
 export const buildPortfolioTimeline = async (
@@ -615,7 +703,7 @@ export const buildPortfolioTimeline = async (
     return { segments: [], currentPositions: [], currentPortfolioUsd: 0 };
   }
 
-  const protocolIndexes = buildProtocolIndexes(wallet, transferActivities, args.adapters);
+  const protocolIndexes = buildProtocolIndexes(wallet, args.activities, args.adapters);
   const walletBalances = new Map<string, number>();
   const protocolBalances = new Map<string, { protocol: ProtocolRef; asset: string; amount: number; contract: string }>();
   const groups = new Map<number, ClassifiedActivity[]>();
@@ -678,6 +766,15 @@ export const buildPortfolioTimeline = async (
     args.priceContext,
     "current"
   );
+  const currentWalletOnlySnapshot = await buildUsdPositions(
+    syncedWalletBalances,
+    new Map(),
+    args.endTimestamp,
+    lastBlock,
+    args.endTimestamp,
+    args.priceContext,
+    "current"
+  );
 
   const endTimestamp = Math.max(cursorTimestamp, args.endTimestamp);
   const finalDurationSeconds = Math.max(0, endTimestamp - cursorTimestamp);
@@ -697,9 +794,11 @@ export const buildPortfolioTimeline = async (
   const exposureSegments = await buildExposureFlowSegments(
     wallet,
     transferActivities,
+    args.activities,
     protocolIndexes,
     args.endTimestamp,
-    args.priceContext
+    args.priceContext,
+    currentWalletOnlySnapshot.totalUsd
   );
 
   return {

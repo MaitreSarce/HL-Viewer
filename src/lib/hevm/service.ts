@@ -211,10 +211,16 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
   await safe(
     () =>
       warmup(
-        classified.map((activity) => ({
-          token: activity.token || "HYPE",
-          timestamp: activity.timestamp,
-        }))
+        classified.flatMap((activity) => [
+          {
+            token: activity.token || "HYPE",
+            timestamp: activity.timestamp,
+          },
+          {
+            token: activity.tokenSymbol || activity.token || "HYPE",
+            timestamp: activity.timestamp,
+          },
+        ])
       ),
     undefined
   );
