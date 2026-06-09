@@ -1,20 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { unstable_cache } from "next/cache";
 import { fetchHevmStatsFromApi } from "@/lib/dashboard/hevm";
 import { isEvmAddress, normalizeAddress } from "@/lib/dashboard/shared";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-const HEVM_RESPONSE_CACHE_SECONDS = 3600;
-const getCachedHevmStats = unstable_cache(
-  async (address: string, hourBucket: number) => {
-    void hourBucket;
-    return fetchHevmStatsFromApi(address);
-  },
-  ["hevm-dashboard-response"],
-  { revalidate: HEVM_RESPONSE_CACHE_SECONDS }
-);
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -26,12 +15,13 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const hourBucket = Math.floor(Date.now() / (HEVM_RESPONSE_CACHE_SECONDS * 1000));
-    const result = await getCachedHevmStats(address, hourBucket);
+    const result = await fetchHevmStatsFromApi(address);
     return NextResponse.json(result, {
       status: 200,
       headers: {
-        "Cache-Control": `public, max-age=0, s-maxage=${HEVM_RESPONSE_CACHE_SECONDS}, stale-while-revalidate=300`,
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        Pragma: "no-cache",
+        Expires: "0",
       },
     });
   } catch (error) {
@@ -42,6 +32,8 @@ export async function GET(request: NextRequest) {
         status: 502,
         headers: {
           "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+          Pragma: "no-cache",
+          Expires: "0",
         },
       }
     );
