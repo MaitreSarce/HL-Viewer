@@ -755,6 +755,7 @@ export const buildPortfolioTimeline = async (
     cursorTimestamp = timestamp;
   }
 
+  const reconstructedWalletBalances = new Map(walletBalances);
   const syncedWalletBalances = await syncCurrentWalletBalancesWithChain(wallet, walletBalances);
   const lastBlock = transferActivities[transferActivities.length - 1].blockNumber;
   const currentSnapshot = await buildUsdPositions(
@@ -766,8 +767,8 @@ export const buildPortfolioTimeline = async (
     args.priceContext,
     "current"
   );
-  const currentWalletOnlySnapshot = await buildUsdPositions(
-    syncedWalletBalances,
+  const twabAnchorSnapshot = await buildUsdPositions(
+    reconstructedWalletBalances,
     new Map(),
     args.endTimestamp,
     lastBlock,
@@ -779,15 +780,15 @@ export const buildPortfolioTimeline = async (
   const endTimestamp = Math.max(cursorTimestamp, args.endTimestamp);
   const finalDurationSeconds = Math.max(0, endTimestamp - cursorTimestamp);
   if (finalDurationSeconds > 0) {
-    const totalUsd = Math.max(0, currentSnapshot.totalUsd || cursorSnapshot.totalUsd);
+    const totalUsd = Math.max(0, twabAnchorSnapshot.totalUsd || cursorSnapshot.totalUsd);
     segments.push({
       startTimestamp: cursorTimestamp,
       endTimestamp,
       durationSeconds: finalDurationSeconds,
       totalUsd,
       contribution: totalUsd * finalDurationSeconds,
-      positions: currentSnapshot.positions.length > 0 ? currentSnapshot.positions : cursorSnapshot.positions,
-      priceSources: currentSnapshot.priceSources.length > 0 ? currentSnapshot.priceSources : cursorSnapshot.priceSources,
+      positions: twabAnchorSnapshot.positions.length > 0 ? twabAnchorSnapshot.positions : cursorSnapshot.positions,
+      priceSources: twabAnchorSnapshot.priceSources.length > 0 ? twabAnchorSnapshot.priceSources : cursorSnapshot.priceSources,
     });
   }
 
@@ -798,7 +799,7 @@ export const buildPortfolioTimeline = async (
     protocolIndexes,
     args.endTimestamp,
     args.priceContext,
-    currentWalletOnlySnapshot.totalUsd
+    twabAnchorSnapshot.totalUsd
   );
 
   return {
