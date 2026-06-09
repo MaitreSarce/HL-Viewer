@@ -210,6 +210,35 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
     undefined
   );
 
+  const adapterById = new Map(adapters.map((adapter) => [adapter.id, adapter]));
+  await safe(
+    async () => {
+      await calculateVolumeUsd(classified, async (activity) => {
+        const adapter = adapterById.get(activity.protocolId);
+        if (!adapter) return 0;
+        return adapter.getVolumeUsd(activity, priceContext);
+      }, wallet);
+      await calculateBridgeVolume(classified, async (activity) => {
+        const adapter = adapterById.get(activity.protocolId);
+        if (!adapter) return 0;
+        return adapter.getVolumeUsd(activity, priceContext);
+      }, wallet);
+    },
+    undefined
+  );
+
+  const timeline = await safe(
+    () =>
+      buildPortfolioTimeline({
+        wallet,
+        activities: classified,
+        adapters,
+        priceContext,
+        endTimestamp: twabEndTimestamp,
+      }),
+    { segments: [], currentPositions: [], currentPortfolioUsd: 0 }
+  );
+
   const {
     context: volumePriceContext,
     warmup: warmupVolumePrices,
@@ -226,7 +255,6 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
     undefined
   );
 
-  const adapterById = new Map(adapters.map((adapter) => [adapter.id, adapter]));
   const volume = await calculateVolumeUsd(volumeClassified, async (activity) => {
     const adapter = adapterById.get(activity.protocolId);
     if (!adapter) return 0;
@@ -238,18 +266,6 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
     if (!adapter) return 0;
     return adapter.getVolumeUsd(activity, volumePriceContext);
   }, wallet);
-
-  const timeline = await safe(
-    () =>
-      buildPortfolioTimeline({
-        wallet,
-        activities: classified,
-        adapters,
-        priceContext,
-        endTimestamp: twabEndTimestamp,
-      }),
-    { segments: [], currentPositions: [], currentPortfolioUsd: 0 }
-  );
 
   const twab = calculateTwabUsd(timeline.segments);
   const contracts = calculateUniqueContracts(rawActivities, wallet);
