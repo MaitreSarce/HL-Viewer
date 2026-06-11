@@ -211,6 +211,34 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
   );
 
   const adapterById = new Map(adapters.map((adapter) => [adapter.id, adapter]));
+  const volumeClassified = buildLegacyVolumeActivities(classified);
+  const volumeResultPromise = safe(async () => {
+    const {
+      context: volumePriceContext,
+      warmup: warmupVolumePrices,
+    } = await createLegacyVolumePriceContext();
+    await warmupVolumePrices(
+      volumeClassified.map((activity) => ({
+        token: activity.token || "HYPE",
+        timestamp: activity.timestamp,
+      }))
+    );
+
+    const volume = await calculateVolumeUsd(volumeClassified, async (activity) => {
+      const adapter = adapterById.get(activity.protocolId);
+      if (!adapter) return 0;
+      return adapter.getVolumeUsd(activity, volumePriceContext);
+    }, wallet);
+
+    const bridge = await calculateBridgeVolume(volumeClassified, async (activity) => {
+      const adapter = adapterById.get(activity.protocolId);
+      if (!adapter) return 0;
+      return adapter.getVolumeUsd(activity, volumePriceContext);
+    }, wallet);
+
+    return { volume, bridge };
+  }, null);
+
   await safe(
     async () => {
       await calculateVolumeUsd(classified, async (activity) => {
@@ -239,33 +267,22 @@ export const buildHevmDashboardStats = async (wallet: string): Promise<HevmDashb
     { segments: [], currentPositions: [], currentPortfolioUsd: 0 }
   );
 
-  const {
-    context: volumePriceContext,
-    warmup: warmupVolumePrices,
-  } = await createLegacyVolumePriceContext();
-  const volumeClassified = buildLegacyVolumeActivities(classified);
-  await safe(
-    () =>
-      warmupVolumePrices(
-        volumeClassified.map((activity) => ({
-          token: activity.token || "HYPE",
-          timestamp: activity.timestamp,
-        }))
-      ),
-    undefined
-  );
-
-  const volume = await calculateVolumeUsd(volumeClassified, async (activity) => {
-    const adapter = adapterById.get(activity.protocolId);
-    if (!adapter) return 0;
-    return adapter.getVolumeUsd(activity, volumePriceContext);
-  }, wallet);
-
-  const bridge = await calculateBridgeVolume(volumeClassified, async (activity) => {
-    const adapter = adapterById.get(activity.protocolId);
-    if (!adapter) return 0;
-    return adapter.getVolumeUsd(activity, volumePriceContext);
-  }, wallet);
+  const volumeResult = await volumeResultPromise;
+  const volume = volumeResult?.volume ?? {
+    totalVolumeUsd: 0,
+    swapVolumeUsd: 0,
+    bridgeVolumeUsd: 0,
+    lendingVolumeUsd: 0,
+    stakingVolumeUsd: 0,
+    transferVolumeUsd: 0,
+    otherContractVolumeUsd: 0,
+  };
+  const bridge = volumeResult?.bridge ?? {
+    coreToEvmVolumeUsd: 0,
+    evmToCoreVolumeUsd: 0,
+    externalBridgeVolumeUsd: 0,
+    totalBridgeVolumeUsd: 0,
+  };
 
   const twab = calculateTwabUsd(timeline.segments);
   const contracts = calculateUniqueContracts(rawActivities, wallet);

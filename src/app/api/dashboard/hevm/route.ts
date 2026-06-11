@@ -4,6 +4,7 @@ import { isEvmAddress, normalizeAddress } from "@/lib/dashboard/shared";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+export const maxDuration = 250;
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);

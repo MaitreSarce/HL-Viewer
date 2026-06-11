@@ -704,6 +704,51 @@ export const buildPortfolioTimeline = async (
   }
 
   const protocolIndexes = buildProtocolIndexes(wallet, args.activities, args.adapters);
+  const fastWalletBalances = new Map<string, number>();
+  const fastProtocolBalances = new Map<string, { protocol: ProtocolRef; asset: string; amount: number; contract: string }>();
+  for (const activity of transferActivities) {
+    applyTransferToLedgers(wallet, activity, protocolIndexes, fastWalletBalances, fastProtocolBalances);
+  }
+
+  const lastBlock = transferActivities[transferActivities.length - 1].blockNumber;
+  const syncedFastWalletBalances = await syncCurrentWalletBalancesWithChain(wallet, fastWalletBalances);
+  const fastCurrentSnapshot = await buildUsdPositions(
+    syncedFastWalletBalances,
+    fastProtocolBalances,
+    args.endTimestamp,
+    lastBlock,
+    args.endTimestamp,
+    args.priceContext,
+    "current"
+  );
+  const fastCurrentWalletOnlySnapshot = await buildUsdPositions(
+    syncedFastWalletBalances,
+    new Map(),
+    args.endTimestamp,
+    lastBlock,
+    args.endTimestamp,
+    args.priceContext,
+    "current"
+  );
+
+  const fastExposureSegments = await buildExposureFlowSegments(
+    wallet,
+    transferActivities,
+    args.activities,
+    protocolIndexes,
+    args.endTimestamp,
+    args.priceContext,
+    fastCurrentWalletOnlySnapshot.totalUsd
+  );
+
+  if (fastExposureSegments.length > 0) {
+    return {
+      segments: fastExposureSegments,
+      currentPositions: fastCurrentSnapshot.positions,
+      currentPortfolioUsd: fastCurrentSnapshot.totalUsd,
+    };
+  }
+
   const walletBalances = new Map<string, number>();
   const protocolBalances = new Map<string, { protocol: ProtocolRef; asset: string; amount: number; contract: string }>();
   const groups = new Map<number, ClassifiedActivity[]>();
@@ -756,7 +801,6 @@ export const buildPortfolioTimeline = async (
   }
 
   const syncedWalletBalances = await syncCurrentWalletBalancesWithChain(wallet, walletBalances);
-  const lastBlock = transferActivities[transferActivities.length - 1].blockNumber;
   const currentSnapshot = await buildUsdPositions(
     syncedWalletBalances,
     protocolBalances,
