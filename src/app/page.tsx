@@ -169,7 +169,7 @@ const HistogramCard = ({
   const columnGapPx = 8;
   const chartHeight = Math.round((allowNegative ? 280 : 240) * zoomY);
   const valueLabelHeight = 30;
-  const axisLabelHeight = displayedRows.length > 12 ? 72 : 42;
+  const axisLabelHeight = 38;
   const plotHeight = Math.max(120, chartHeight - valueLabelHeight - axisLabelHeight);
   const contentWidth = Math.round(displayedRows.length * columnWidthPx + Math.max(0, displayedRows.length - 1) * columnGapPx);
   const scrollEndPaddingPx = 96;
@@ -187,7 +187,8 @@ const HistogramCard = ({
     ? [maxPositive, maxPositive / 2, 0, minNegative / 2, minNegative].filter((value, index, arr) => index === 0 || Math.abs(value - arr[index - 1]) > 1e-9)
     : [maxAbs, maxAbs * 0.66, maxAbs * 0.33, 0];
   const chartTone = allowNegative ? "rose" : "cyan";
-  const labelEvery = displayedRows.length > 56 ? 4 : displayedRows.length > 32 ? 3 : displayedRows.length > 18 ? 2 : 1;
+  const targetLabelWidthPx = 88;
+  const labelEvery = Math.max(1, Math.ceil(targetLabelWidthPx / Math.max(1, columnWidthPx + columnGapPx)));
 
   const chartBody = (isExpanded = false) => (
     <div className="space-y-4">
@@ -268,7 +269,7 @@ const HistogramCard = ({
                         <div key={`${title}-axis-${row.label}`} className="relative flex-none" style={{ width: `${columnWidthPx}px`, height: `${axisLabelHeight - 10}px` }}>
                           {showAxisLabel ? (
                             <span
-                              className="absolute left-1/2 top-1 block w-24 -translate-x-1/2 origin-top rotate-90 truncate text-left text-[10px] font-semibold text-slate-600"
+                              className="absolute left-1/2 top-1 block w-[86px] -translate-x-1/2 truncate rounded-full bg-slate-100 px-2 py-1 text-center text-[10px] font-semibold text-slate-600 ring-1 ring-slate-200"
                               title={row.label}
                             >
                               {row.label}
