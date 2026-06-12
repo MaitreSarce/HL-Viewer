@@ -166,11 +166,14 @@ const HistogramCard = ({
   }, null);
   const latest = displayedRows[displayedRows.length - 1] ?? null;
   const columnWidthPx = Math.round(56 * zoomX);
+  const columnGapPx = 8;
   const chartHeight = Math.round((allowNegative ? 280 : 240) * zoomY);
   const valueLabelHeight = 30;
-  const axisLabelHeight = displayedRows.length > 12 ? 58 : 34;
+  const axisLabelHeight = displayedRows.length > 12 ? 72 : 42;
   const plotHeight = Math.max(120, chartHeight - valueLabelHeight - axisLabelHeight);
-  const minWidth = Math.max(620, Math.round(displayedRows.length * columnWidthPx));
+  const contentWidth = Math.round(displayedRows.length * columnWidthPx + Math.max(0, displayedRows.length - 1) * columnGapPx);
+  const scrollEndPaddingPx = 96;
+  const minWidth = Math.max(620, contentWidth + scrollEndPaddingPx);
   const zeroFromBottom = allowNegative
     ? maxPositive > 0 && negativeAbs > 0
       ? (negativeAbs / (maxPositive + negativeAbs)) * plotHeight
@@ -223,8 +226,8 @@ const HistogramCard = ({
                   <div className="absolute inset-x-0 top-2/3 border-t border-dashed border-slate-100" />
                   {allowNegative ? <div className="absolute inset-x-0 border-t-2 border-slate-300" style={{ bottom: `${zeroFromBottom}px` }} /> : null}
                 </div>
-                <div className="relative flex items-end gap-2" style={{ height: `${plotHeight}px` }}>
-                  {displayedRows.map((row, index) => {
+                <div className="relative flex items-end" style={{ height: `${plotHeight}px`, gap: `${columnGapPx}px`, width: `${contentWidth}px` }}>
+                  {displayedRows.map((row) => {
                     const isNegative = allowNegative && row.value < 0;
                     const upPx = !isNegative && maxPositive > 0 ? (Math.max(0, row.value) / maxPositive) * Math.max(0, topSpan) : 0;
                     const downPx = isNegative && negativeAbs > 0 ? (Math.abs(row.value) / negativeAbs) * Math.max(0, bottomSpan) : 0;
@@ -235,7 +238,6 @@ const HistogramCard = ({
                         ? Math.max(4, zeroFromBottom - downPx - 22)
                         : Math.min(plotHeight + 6, zeroFromBottom + upPx + 8)
                       : Math.min(plotHeight + 6, barHeightPx + 8);
-                    const showAxisLabel = index % labelEvery === 0 || index === displayedRows.length - 1;
                     const barColor = isNegative
                       ? "bg-gradient-to-t from-rose-700 to-rose-400"
                       : chartTone === "rose"
@@ -254,17 +256,30 @@ const HistogramCard = ({
                           className={`absolute left-1/2 w-[72%] -translate-x-1/2 rounded-t-lg shadow-sm transition group-hover:w-[82%] group-hover:brightness-110 ${barColor}`}
                           style={{ height: `${barHeightPx}px`, bottom: `${barBottom}px` }}
                         />
-                        {showAxisLabel ? (
-                          <span
-                            className="absolute left-1/2 top-full mt-3 w-20 origin-top-left -translate-x-2 rotate-45 truncate text-left text-[10px] font-medium text-slate-500"
-                            title={row.label}
-                          >
-                            {row.label}
-                          </span>
-                        ) : null}
                       </div>
                     );
                   })}
+                </div>
+                <div className="absolute left-3 right-3" style={{ bottom: "8px" }}>
+                  <div className="flex" style={{ gap: `${columnGapPx}px`, width: `${contentWidth}px` }}>
+                    {displayedRows.map((row, index) => {
+                      const showAxisLabel = index % labelEvery === 0 || index === displayedRows.length - 1;
+                      return (
+                        <div key={`${title}-axis-${row.label}`} className="relative flex-none" style={{ width: `${columnWidthPx}px`, height: `${axisLabelHeight - 10}px` }}>
+                          {showAxisLabel ? (
+                            <span
+                              className="absolute left-1/2 top-1 block w-24 -translate-x-1/2 origin-top rotate-90 truncate text-left text-[10px] font-semibold text-slate-600"
+                              title={row.label}
+                            >
+                              {row.label}
+                            </span>
+                          ) : (
+                            <span className="absolute left-1/2 top-1 h-1 w-1 -translate-x-1/2 rounded-full bg-slate-300" />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             </div>
