@@ -148,120 +148,176 @@ const HistogramCard = ({
   rows: Array<{ label: string; value: number }>;
   allowNegative?: boolean;
 }) => {
-  const [zoom, setZoom] = useState(1);
+  const [zoomX, setZoomX] = useState(1);
+  const [zoomY, setZoomY] = useState(1);
   const [expanded, setExpanded] = useState(false);
-  const max = rows.reduce((acc, row) => (Math.abs(row.value) > acc ? Math.abs(row.value) : acc), 0);
-  const maxItems = 48;
+  const maxItems = 72;
   const displayedRows = rows.length > maxItems ? rows.slice(rows.length - maxItems) : rows;
-  const columnWidthPx = 44;
-  const chartHeight = Math.round(220 * zoom);
-  const plotHeight = chartHeight - 26;
-  const minWidth = Math.max(520, Math.round(displayedRows.length * columnWidthPx * zoom));
-  const maxPositive = displayedRows.reduce((acc, row) => (row.value > acc ? row.value : acc), 0);
-  const minNegative = displayedRows.reduce((acc, row) => (row.value < acc ? row.value : acc), 0);
+  const positiveRows = displayedRows.filter((row) => row.value > 0);
+  const negativeRows = displayedRows.filter((row) => row.value < 0);
+  const maxPositive = positiveRows.reduce((acc, row) => Math.max(acc, row.value), 0);
+  const minNegative = negativeRows.reduce((acc, row) => Math.min(acc, row.value), 0);
   const negativeAbs = Math.abs(minNegative);
-  const zeroFromBottom =
-    allowNegative
-      ? maxPositive > 0 && negativeAbs > 0
-        ? (negativeAbs / (maxPositive + negativeAbs)) * plotHeight
-        : maxPositive > 0
-          ? 0
-          : plotHeight
-      : 0;
+  const maxAbs = Math.max(maxPositive, negativeAbs, 1);
+  const total = displayedRows.reduce((sum, row) => sum + row.value, 0);
+  const peak = displayedRows.reduce<{ label: string; value: number } | null>((best, row) => {
+    if (!best || Math.abs(row.value) > Math.abs(best.value)) return row;
+    return best;
+  }, null);
+  const latest = displayedRows[displayedRows.length - 1] ?? null;
+  const columnWidthPx = Math.round(56 * zoomX);
+  const chartHeight = Math.round((allowNegative ? 280 : 240) * zoomY);
+  const plotHeight = chartHeight - 34;
+  const minWidth = Math.max(620, Math.round(displayedRows.length * columnWidthPx));
+  const zeroFromBottom = allowNegative
+    ? maxPositive > 0 && negativeAbs > 0
+      ? (negativeAbs / (maxPositive + negativeAbs)) * plotHeight
+      : maxPositive > 0
+        ? 0
+        : plotHeight
+    : 0;
   const topSpan = allowNegative ? plotHeight - zeroFromBottom : plotHeight;
   const bottomSpan = allowNegative ? zeroFromBottom : 0;
-  const chartBody = (
-    <div className="space-y-2">
-      <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-2">
-        <div className="flex gap-2">
-          <div className="flex w-14 flex-col justify-between text-right text-[10px] text-slate-500">
-            <span>{formatUsdCompact(max)}</span>
-            <span>{formatUsdCompact(max * 0.66)}</span>
-            <span>{formatUsdCompact(max * 0.33)}</span>
-            <span>$0</span>
+  const tickValues = allowNegative
+    ? [maxPositive, maxPositive / 2, 0, minNegative / 2, minNegative].filter((value, index, arr) => index === 0 || Math.abs(value - arr[index - 1]) > 1e-9)
+    : [maxAbs, maxAbs * 0.66, maxAbs * 0.33, 0];
+  const chartTone = allowNegative ? "rose" : "cyan";
+  const labelEvery = displayedRows.length > 48 ? 6 : displayedRows.length > 28 ? 4 : displayedRows.length > 16 ? 2 : 1;
+
+  const chartBody = (isExpanded = false) => (
+    <div className="space-y-4">
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Total shown</p>
+          <p className="mt-1 text-sm font-semibold text-slate-900">{formatUsdCompact(total)}</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Peak period</p>
+          <p className="mt-1 truncate text-sm font-semibold text-slate-900" title={peak ? `${peak.label}: ${formatUsd(peak.value)}` : "N/A"}>
+            {peak ? `${peak.label} - ${formatUsdCompact(peak.value)}` : "N/A"}
+          </p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">Latest</p>
+          <p className="mt-1 truncate text-sm font-semibold text-slate-900" title={latest ? `${latest.label}: ${formatUsd(latest.value)}` : "N/A"}>
+            {latest ? `${latest.label} - ${formatUsdCompact(latest.value)}` : "N/A"}
+          </p>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-gradient-to-b from-white to-slate-50 p-3 shadow-inner">
+        <div className="flex gap-3">
+          <div className="flex w-16 flex-col justify-between py-5 text-right text-[10px] font-medium text-slate-400">
+            {tickValues.map((tick, index) => (
+              <span key={`${title}-tick-${index}`}>{formatUsdCompact(tick)}</span>
+            ))}
           </div>
-          <div className="overflow-x-auto">
-            <div className="relative" style={{ minWidth: `${minWidth}px` }}>
-              <div className="relative flex items-end gap-1 border-b border-l border-slate-300 px-2 pb-1" style={{ height: `${chartHeight}px` }}>
-                <div className="pointer-events-none absolute inset-0">
-                  <div className="absolute left-0 right-0 top-[33%] border-t border-dashed border-slate-200" />
-                  <div className="absolute left-0 right-0 top-[66%] border-t border-dashed border-slate-200" />
-                  {allowNegative ? <div className="absolute left-0 right-0 border-t-2 border-slate-300" style={{ bottom: `${zeroFromBottom}px` }} /> : null}
+          <div className="min-w-0 flex-1 overflow-x-auto pb-2">
+            <div className="relative" style={{ minWidth: `${isExpanded ? Math.max(minWidth, 980) : minWidth}px` }}>
+              <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white px-3 pb-8 pt-5" style={{ height: `${isExpanded ? chartHeight + 80 : chartHeight}px` }}>
+                <div className="pointer-events-none absolute inset-x-3 bottom-8 top-5">
+                  <div className="absolute inset-x-0 top-0 border-t border-dashed border-slate-200" />
+                  <div className="absolute inset-x-0 top-1/3 border-t border-dashed border-slate-100" />
+                  <div className="absolute inset-x-0 top-2/3 border-t border-dashed border-slate-100" />
+                  {allowNegative ? <div className="absolute inset-x-0 border-t-2 border-slate-300" style={{ bottom: `${zeroFromBottom}px` }} /> : null}
                 </div>
-                {displayedRows.map((row) => {
-                  const upPx = allowNegative
-                    ? row.value >= 0 && maxPositive > 0
-                      ? (row.value / maxPositive) * Math.max(0, topSpan)
-                      : 0
-                    : max > 0
-                      ? (Math.abs(row.value) / max) * plotHeight
-                      : 0;
-                  const downPx = allowNegative && row.value < 0 && negativeAbs > 0
-                    ? (Math.abs(row.value) / negativeAbs) * Math.max(0, bottomSpan)
-                    : 0;
-                  const barHeightPx = allowNegative ? (row.value >= 0 ? upPx : downPx) : upPx;
-                  const labelBottom = allowNegative
-                    ? row.value >= 0
-                      ? zeroFromBottom + upPx + 4
-                      : zeroFromBottom + 4
-                    : barHeightPx + 4;
-                  return (
-                    <div key={`${title}-bar-${row.label}`} className="relative flex h-full w-11 flex-none items-end justify-center">
-                      <span className="absolute text-[9px] leading-none text-slate-700" style={{ bottom: `${labelBottom}px` }} title={formatUsd(row.value)}>
-                        {formatUsdCompact(row.value)}
-                      </span>
-                      <div
-                        className={`absolute w-full rounded-t ${allowNegative && row.value < 0 ? "bg-rose-600" : "bg-slate-700"}`}
-                        style={{
-                          height: `${barHeightPx}px`,
-                          bottom: `${allowNegative ? (row.value >= 0 ? zeroFromBottom : zeroFromBottom - downPx) : 0}px`,
-                        }}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="mt-1 flex gap-1 px-2">
-                {displayedRows.map((row) => (
-                  <span key={`${title}-label-${row.label}`} className="w-11 flex-none truncate text-center text-[10px] text-slate-600" title={row.label}>
-                    {row.label}
-                  </span>
-                ))}
+                <div className="relative flex h-full items-end gap-2">
+                  {displayedRows.map((row, index) => {
+                    const isNegative = allowNegative && row.value < 0;
+                    const upPx = !isNegative && maxPositive > 0 ? (Math.max(0, row.value) / maxPositive) * Math.max(0, topSpan) : 0;
+                    const downPx = isNegative && negativeAbs > 0 ? (Math.abs(row.value) / negativeAbs) * Math.max(0, bottomSpan) : 0;
+                    const barHeightPx = Math.max(row.value === 0 ? 0 : 3, isNegative ? downPx : allowNegative ? upPx : (Math.abs(row.value) / maxAbs) * plotHeight);
+                    const barBottom = allowNegative ? (isNegative ? zeroFromBottom - downPx : zeroFromBottom) : 0;
+                    const labelBottom = allowNegative
+                      ? isNegative
+                        ? Math.max(2, zeroFromBottom - downPx - 18)
+                        : Math.min(plotHeight + 8, zeroFromBottom + upPx + 8)
+                      : Math.min(plotHeight + 8, barHeightPx + 8);
+                    const showAxisLabel = index % labelEvery === 0 || index === displayedRows.length - 1;
+                    const barColor = isNegative
+                      ? "bg-gradient-to-t from-rose-700 to-rose-400"
+                      : chartTone === "rose"
+                        ? "bg-gradient-to-t from-emerald-700 to-emerald-400"
+                        : "bg-gradient-to-t from-cyan-700 to-sky-400";
+                    return (
+                      <div key={`${title}-bar-${row.label}`} className="group relative h-full flex-none" style={{ width: `${columnWidthPx}px` }}>
+                        <span
+                          className="absolute left-1/2 z-10 -translate-x-1/2 rounded-md bg-white/90 px-1 py-0.5 text-[9px] font-semibold leading-none text-slate-700 opacity-80 shadow-sm ring-1 ring-slate-200 transition group-hover:opacity-100"
+                          style={{ bottom: `${labelBottom}px` }}
+                          title={`${row.label}: ${formatUsd(row.value)}`}
+                        >
+                          {formatUsdCompact(row.value)}
+                        </span>
+                        <div
+                          className={`absolute left-1/2 w-[72%] -translate-x-1/2 rounded-t-lg shadow-sm transition group-hover:w-[82%] group-hover:brightness-110 ${barColor}`}
+                          style={{ height: `${barHeightPx}px`, bottom: `${barBottom}px` }}
+                        />
+                        <span
+                          className={`absolute bottom-[-28px] left-1/2 w-full -translate-x-1/2 truncate text-center text-[10px] text-slate-500 ${showAxisLabel ? "opacity-100" : "opacity-0"}`}
+                          title={row.label}
+                        >
+                          {row.label}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           </div>
         </div>
+        {rows.length > maxItems ? (
+          <p className="mt-2 text-[11px] text-slate-500">Showing last {maxItems} periods. Use Expand or zoom for denser histories.</p>
+        ) : null}
       </div>
-      {rows.length > maxItems ? <p className="text-[10px] text-slate-500">Showing last {maxItems} periods.</p> : null}
     </div>
   );
+
   return (
-    <article className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-700">{title}</h3>
-        <div className="flex items-center gap-1">
-          <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setZoom((z) => Math.max(0.6, +(z - 0.2).toFixed(1)))}>-</button>
-          <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setZoom((z) => Math.min(2.4, +(z + 0.2).toFixed(1)))}>+</button>
-          <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setExpanded(true)}>Expand</button>
+    <article className="rounded-3xl border border-slate-200/80 bg-white p-4 shadow-sm shadow-slate-200/70">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-700">{title}</h3>
+          <p className="mt-1 text-xs text-slate-400">{displayedRows.length} periods - scroll horizontally for history</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1" title="Horizontal zoom changes bar width and spacing.">
+            <span className="px-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Width</span>
+            <button type="button" className="rounded-full px-2 py-1 text-xs font-semibold text-slate-600 transition hover:bg-white" onClick={() => setZoomX((z) => Math.max(0.6, +(z - 0.2).toFixed(1)))}>-</button>
+            <span className="min-w-10 text-center text-[10px] font-semibold text-slate-400">{Math.round(zoomX * 100)}%</span>
+            <button type="button" className="rounded-full px-2 py-1 text-xs font-semibold text-slate-600 transition hover:bg-white" onClick={() => setZoomX((z) => Math.min(2.6, +(z + 0.2).toFixed(1)))}>+</button>
+          </div>
+          <div className="flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1" title="Vertical zoom changes chart height.">
+            <span className="px-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Height</span>
+            <button type="button" className="rounded-full px-2 py-1 text-xs font-semibold text-slate-600 transition hover:bg-white" onClick={() => setZoomY((z) => Math.max(0.7, +(z - 0.2).toFixed(1)))}>-</button>
+            <span className="min-w-10 text-center text-[10px] font-semibold text-slate-400">{Math.round(zoomY * 100)}%</span>
+            <button type="button" className="rounded-full px-2 py-1 text-xs font-semibold text-slate-600 transition hover:bg-white" onClick={() => setZoomY((z) => Math.min(2.4, +(z + 0.2).toFixed(1)))}>+</button>
+          </div>
+          <button type="button" className="rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-slate-700" onClick={() => setExpanded(true)}>Expand</button>
         </div>
       </div>
       {displayedRows.length === 0 ? (
-        <p className="text-xs text-slate-500">No data.</p>
+        <p className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-xs text-slate-500">No data for this period.</p>
       ) : (
-        chartBody
+        chartBody(false)
       )}
       {expanded ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setExpanded(false)}>
-          <div className="max-h-[92vh] w-[96vw] overflow-auto rounded-xl bg-white p-4" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-2 flex justify-end"><button className="rounded border px-2 py-1 text-xs" onClick={() => setExpanded(false)}>Close</button></div>
-            {chartBody}
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm" onClick={() => setExpanded(false)}>
+          <div className="max-h-[92vh] w-[96vw] overflow-auto rounded-3xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">{title}</h3>
+                <p className="text-xs text-slate-500">Expanded view with the same selected granularity.</p>
+              </div>
+              <button className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 transition hover:bg-slate-50" onClick={() => setExpanded(false)}>Close</button>
+            </div>
+            {chartBody(true)}
           </div>
         </div>
       ) : null}
     </article>
   );
 };
-
 export default function Home() {
   const [address, setAddress] = useState("");
   const [activeTab, setActiveTab] = useState<TabKey>("trading");
@@ -518,7 +574,7 @@ export default function Home() {
                 />
               </div>
               <p className="text-xs text-slate-500">
-                TWAB legend: the value in parentheses is `TWAB × wallet age (days)`.
+                TWAB legend: the value in parentheses is `TWAB x wallet age (days)`.
               </p>
               <div className="grid gap-4 md:grid-cols-2">
                 <HistogramCard
