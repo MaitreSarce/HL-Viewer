@@ -344,7 +344,7 @@ const unitFeeUsdFromFill = (fill: HyperliquidFill) => {
   const px = toFiniteNumber(readStringKeys(fill, ["px", "price"]));
   const feeToken = readStringKeys(fill, ["feeToken"]).trim().toUpperCase();
   if (!Number.isFinite(fee) || fee === 0) return 0;
-  if (feeToken === "USDC") return fee;
+  if (isStableQuote(feeToken)) return fee;
   if (Number.isFinite(px) && px > 0) return fee * px;
   return 0;
 };
@@ -354,7 +354,7 @@ const spotFeeUsdFromFill = (fill: HyperliquidFill) => {
   const px = toFiniteNumber(readStringKeys(fill, ["px", "price"]));
   const feeToken = readStringKeys(fill, ["feeToken"]).trim().toUpperCase();
   if (!Number.isFinite(fee) || fee <= 0) return 0;
-  if (feeToken === "USDC") return fee;
+  if (isStableQuote(feeToken)) return fee;
   if (Number.isFinite(px) && px > 0) return fee * px;
   return fee;
 };
@@ -366,6 +366,7 @@ const STABLE_QUOTES = new Set([
   "USDE",
   "USDT0",
   "USD0",
+  "USDH",
   "FDUSD",
   "DAI",
 ]);
