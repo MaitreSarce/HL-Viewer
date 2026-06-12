@@ -167,7 +167,9 @@ const HistogramCard = ({
   const latest = displayedRows[displayedRows.length - 1] ?? null;
   const columnWidthPx = Math.round(56 * zoomX);
   const chartHeight = Math.round((allowNegative ? 280 : 240) * zoomY);
-  const plotHeight = chartHeight - 34;
+  const valueLabelHeight = 30;
+  const axisLabelHeight = displayedRows.length > 12 ? 58 : 34;
+  const plotHeight = Math.max(120, chartHeight - valueLabelHeight - axisLabelHeight);
   const minWidth = Math.max(620, Math.round(displayedRows.length * columnWidthPx));
   const zeroFromBottom = allowNegative
     ? maxPositive > 0 && negativeAbs > 0
@@ -182,7 +184,7 @@ const HistogramCard = ({
     ? [maxPositive, maxPositive / 2, 0, minNegative / 2, minNegative].filter((value, index, arr) => index === 0 || Math.abs(value - arr[index - 1]) > 1e-9)
     : [maxAbs, maxAbs * 0.66, maxAbs * 0.33, 0];
   const chartTone = allowNegative ? "rose" : "cyan";
-  const labelEvery = displayedRows.length > 48 ? 6 : displayedRows.length > 28 ? 4 : displayedRows.length > 16 ? 2 : 1;
+  const labelEvery = displayedRows.length > 56 ? 4 : displayedRows.length > 32 ? 3 : displayedRows.length > 18 ? 2 : 1;
 
   const chartBody = (isExpanded = false) => (
     <div className="space-y-4">
@@ -214,14 +216,14 @@ const HistogramCard = ({
           </div>
           <div className="min-w-0 flex-1 overflow-x-auto pb-2">
             <div className="relative" style={{ minWidth: `${isExpanded ? Math.max(minWidth, 980) : minWidth}px` }}>
-              <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white px-3 pb-8 pt-5" style={{ height: `${isExpanded ? chartHeight + 80 : chartHeight}px` }}>
-                <div className="pointer-events-none absolute inset-x-3 bottom-8 top-5">
+              <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-white px-3" style={{ height: `${isExpanded ? chartHeight + 90 : chartHeight}px`, paddingTop: `${valueLabelHeight}px`, paddingBottom: `${axisLabelHeight}px` }}>
+                <div className="pointer-events-none absolute inset-x-3" style={{ top: `${valueLabelHeight}px`, bottom: `${axisLabelHeight}px` }}>
                   <div className="absolute inset-x-0 top-0 border-t border-dashed border-slate-200" />
                   <div className="absolute inset-x-0 top-1/3 border-t border-dashed border-slate-100" />
                   <div className="absolute inset-x-0 top-2/3 border-t border-dashed border-slate-100" />
                   {allowNegative ? <div className="absolute inset-x-0 border-t-2 border-slate-300" style={{ bottom: `${zeroFromBottom}px` }} /> : null}
                 </div>
-                <div className="relative flex h-full items-end gap-2">
+                <div className="relative flex items-end gap-2" style={{ height: `${plotHeight}px` }}>
                   {displayedRows.map((row, index) => {
                     const isNegative = allowNegative && row.value < 0;
                     const upPx = !isNegative && maxPositive > 0 ? (Math.max(0, row.value) / maxPositive) * Math.max(0, topSpan) : 0;
@@ -230,9 +232,9 @@ const HistogramCard = ({
                     const barBottom = allowNegative ? (isNegative ? zeroFromBottom - downPx : zeroFromBottom) : 0;
                     const labelBottom = allowNegative
                       ? isNegative
-                        ? Math.max(2, zeroFromBottom - downPx - 18)
-                        : Math.min(plotHeight + 8, zeroFromBottom + upPx + 8)
-                      : Math.min(plotHeight + 8, barHeightPx + 8);
+                        ? Math.max(4, zeroFromBottom - downPx - 22)
+                        : Math.min(plotHeight + 6, zeroFromBottom + upPx + 8)
+                      : Math.min(plotHeight + 6, barHeightPx + 8);
                     const showAxisLabel = index % labelEvery === 0 || index === displayedRows.length - 1;
                     const barColor = isNegative
                       ? "bg-gradient-to-t from-rose-700 to-rose-400"
@@ -252,12 +254,14 @@ const HistogramCard = ({
                           className={`absolute left-1/2 w-[72%] -translate-x-1/2 rounded-t-lg shadow-sm transition group-hover:w-[82%] group-hover:brightness-110 ${barColor}`}
                           style={{ height: `${barHeightPx}px`, bottom: `${barBottom}px` }}
                         />
-                        <span
-                          className={`absolute bottom-[-28px] left-1/2 w-full -translate-x-1/2 truncate text-center text-[10px] text-slate-500 ${showAxisLabel ? "opacity-100" : "opacity-0"}`}
-                          title={row.label}
-                        >
-                          {row.label}
-                        </span>
+                        {showAxisLabel ? (
+                          <span
+                            className="absolute left-1/2 top-full mt-3 w-20 origin-top-left -translate-x-2 rotate-45 truncate text-left text-[10px] font-medium text-slate-500"
+                            title={row.label}
+                          >
+                            {row.label}
+                          </span>
+                        ) : null}
                       </div>
                     );
                   })}
@@ -318,8 +322,8 @@ const HistogramCard = ({
     </article>
   );
 };
-export default function Home() {
-  const [address, setAddress] = useState("");
+export default function Home({ initialAddress = "" }: { initialAddress?: string }) {
+  const [address, setAddress] = useState(initialAddress);
   const [activeTab, setActiveTab] = useState<TabKey>("trading");
   const [histGranularity, setHistGranularity] = useState<HistogramGranularity>("day");
   const [loadingApi, setLoadingApi] = useState(false);
@@ -333,6 +337,8 @@ export default function Home() {
   const hevmWarnings = useMemo(() => hevm?.meta?.warnings ?? [], [hevm]);
   const unitWarnings = useMemo(() => unitBridge?.meta?.warnings ?? [], [unitBridge]);
   const walletAgeDays = hevm?.stats?.sinceFirstTx?.days ?? null;
+  const trimmedAddress = address.trim();
+  const sharePath = trimmedAddress ? `/wallet/${encodeURIComponent(trimmedAddress)}` : "";
 
   const onAnalyzeApi = async (event: FormEvent) => {
     event.preventDefault();
@@ -434,6 +440,11 @@ export default function Home() {
             {loadingApi ? "Loading API..." : "Analyze via API"}
           </button>
           <p className="text-[11px] text-amber-700">Warning: API trading stats count up to the most recent 10,000 fills.</p>
+          {sharePath ? (
+            <Link href={sharePath} className="text-[11px] font-medium text-sky-700 underline underline-offset-2 hover:text-sky-900">
+              Shareable link
+            </Link>
+          ) : null}
         </div>
       </form>
 
