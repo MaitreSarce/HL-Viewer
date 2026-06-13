@@ -385,11 +385,13 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const [apiScanStartedAt, setApiScanStartedAt] = useState<number | null>(null);
   const [apiScanElapsedMs, setApiScanElapsedMs] = useState(0);
   const [autoContinueApi, setAutoContinueApi] = useState(false);
+  const [autoContinueKick, setAutoContinueKick] = useState(0);
   const [autoScanComplete, setAutoScanComplete] = useState(false);
   const [autoScanBlocked, setAutoScanBlocked] = useState(false);
   const apiScanIdRef = useRef(createApiScanId());
   const autoScanCompleteRef = useRef(false);
   const autoScanBlockedRef = useRef(false);
+  const autoContinueRequestedRef = useRef(false);
 
   const setActiveApiScanId = useCallback((nextScanId: string) => {
     apiScanIdRef.current = nextScanId;
@@ -493,8 +495,10 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     setTrading(null);
     setHevm(null);
     setUnitBridge(null);
+    autoContinueRequestedRef.current = enableAutoContinue;
     setAutoScanCompleteState(false);
     setAutoScanBlockedState(false);
+    setAutoContinueKick(0);
     setAutoContinueApi(enableAutoContinue);
     const nextScanId = createApiScanId();
     setActiveApiScanId(nextScanId);
@@ -530,7 +534,12 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     const tradingTask = safeCall(`/api/dashboard/trading?${params.toString()}`)
       .then((tradingRes) => {
         if (tradingRes.ok) {
-          setTrading(tradingRes.payload as TradingData);
+          const nextTrading = tradingRes.payload as TradingData;
+          setTrading(nextTrading);
+          if (enableAutoContinue && nextTrading.meta?.apiScan?.canContinue) {
+            setApiScanMessage("Auto continuing is enabled. Next continuation starts in a few seconds.");
+            setAutoContinueKick((value) => value + 1);
+          }
         } else {
           setAutoScanBlockedState(true);
           setApiScanMessage("Auto scan paused because Hyperliquid trading stats returned an error. You can retry manually with Continue API scan.");
@@ -632,6 +641,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
         );
       } else {
         setAutoContinueApi(false);
+        autoContinueRequestedRef.current = false;
         setAutoScanCompleteState(true);
         setApiScanProgress((current) =>
           current
@@ -658,8 +668,36 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   }, [address, refreshApiScanProgress, setAutoScanBlockedState, setAutoScanCompleteState, trading?.totals.fills]);
 
   useEffect(() => {
+    if (
+      autoContinueKick <= 0 ||
+      !autoContinueRequestedRef.current ||
+      autoScanComplete ||
+      autoScanBlocked ||
+      loadingTrading ||
+      loadingContinueApi ||
+      !trading?.meta?.apiScan?.canContinue
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (!autoContinueRequestedRef.current || autoScanCompleteRef.current || autoScanBlockedRef.current) return;
+      void onContinueApiScan({ automatic: true });
+    }, 2_000);
+    return () => window.clearTimeout(timer);
+  }, [
+    autoContinueKick,
+    autoScanBlocked,
+    autoScanComplete,
+    loadingContinueApi,
+    loadingTrading,
+    onContinueApiScan,
+    trading?.meta?.apiScan?.canContinue,
+  ]);
+
+  useEffect(() => {
     if (autoScanComplete || autoScanBlocked || !autoContinueApi || !canContinueApiScan) return;
     const timer = window.setTimeout(() => {
+      if (!autoContinueRequestedRef.current) return;
       void onContinueApiScan({ automatic: true });
     }, 2_000);
     return () => window.clearTimeout(timer);
@@ -739,7 +777,11 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
                 <input
                   type="checkbox"
                   checked={autoContinueApi}
-                  onChange={(event) => setAutoContinueApi(event.target.checked)}
+                  onChange={(event) => {
+                    autoContinueRequestedRef.current = event.target.checked;
+                    setAutoContinueApi(event.target.checked);
+                    if (event.target.checked) setAutoScanBlockedState(false);
+                  }}
                   className="h-4 w-4"
                 />
                 Auto continuing
