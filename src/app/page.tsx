@@ -4,7 +4,7 @@ import { FormEvent, useMemo, useState } from "react";
 import Link from "next/link";
 
 type TradingData = {
-  source: "api";
+  source: "api" | "full_export";
   totals: {
     fills: number;
     outcomes: { volume: number; pnl: number; feesPaid: number };
@@ -29,6 +29,8 @@ type TradingData = {
   };
   meta?: {
     warnings?: string[];
+    truncated?: boolean;
+    dataSourceLabel?: string;
   };
   charts: {
     outcomes: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number; pnl: number }>>;
@@ -343,6 +345,8 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const [activeTab, setActiveTab] = useState<TabKey>("trading");
   const [histGranularity, setHistGranularity] = useState<HistogramGranularity>("day");
   const [loadingApi, setLoadingApi] = useState(false);
+  const [loadingFullExport, setLoadingFullExport] = useState(false);
+  const [fullExportMessage, setFullExportMessage] = useState("");
   const [error, setError] = useState("");
 
   const [trading, setTrading] = useState<TradingData | null>(null);
@@ -355,11 +359,13 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const walletAgeDays = hevm?.stats?.sinceFirstTx?.days ?? null;
   const trimmedAddress = address.trim();
   const sharePath = trimmedAddress ? `/wallet/${encodeURIComponent(trimmedAddress)}` : "";
+  const canRequestFullExport = Boolean(trading && address.trim());
 
   const onAnalyzeApi = async (event: FormEvent) => {
     event.preventDefault();
     setLoadingApi(true);
     setError("");
+    setFullExportMessage("");
 
     try {
       const params = new URLSearchParams({
@@ -417,7 +423,41 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       setLoadingApi(false);
     }
   };
-  const isLoading = loadingApi;
+
+  const onFetchFullHistory = async () => {
+    setLoadingFullExport(true);
+    setError("");
+    setFullExportMessage(
+      "Full history export in progress. This can take a few minutes for active wallets. Please keep this page open."
+    );
+
+    try {
+      const response = await fetch("/api/dashboard/trading-full", {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
+        },
+        body: JSON.stringify({ address: address.trim() }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = (payload as { error?: string }).error ?? "Full history export failed.";
+        setFullExportMessage(message);
+        return;
+      }
+      setTrading(payload as TradingData);
+      setFullExportMessage("Full history export loaded. Complete trading history is now used for fill-based stats.");
+    } catch {
+      setFullExportMessage("Full history export failed. Standard Hyperliquid API data is still displayed.");
+    } finally {
+      setLoadingFullExport(false);
+    }
+  };
+
+  const isLoading = loadingApi || loadingFullExport;
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-8 md:px-8">
@@ -530,8 +570,37 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
           {trading ? (
             <>
               <p className="text-sm text-slate-600">
-                Active source: Hyperliquid API
+                Active source: {trading.meta?.dataSourceLabel ?? (trading.source === "full_export" ? "Full history export" : "Hyperliquid API")}
               </p>
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600 shadow-sm">
+                {trading.source === "full_export" ? (
+                  <p className="font-medium text-emerald-700">Full history export loaded. Fill-based trading stats use the complete exported history.</p>
+                ) : (
+                  <div className="space-y-2">
+                    <p>
+                      Standard Hyperliquid API is fast, but it only exposes the 10,000 most recent fills. If this wallet is very active,
+                      older trades may be missing from fill-based stats.
+                    </p>
+                    <p className="text-slate-500">
+                      Full history export is limited to one request per wallet/user per UTC day. If the daily quota is reached, the app keeps
+                      showing standard API data and explains when to retry.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={!canRequestFullExport || loadingFullExport}
+                      onClick={onFetchFullHistory}
+                      className="rounded-xl bg-sky-700 px-4 py-2 text-xs font-semibold text-white transition hover:bg-sky-600 disabled:opacity-60"
+                    >
+                      {loadingFullExport ? "Fetching full history..." : "Fetch full history"}
+                    </button>
+                  </div>
+                )}
+                {fullExportMessage ? (
+                  <p className={`mt-2 ${fullExportMessage.includes("limit reached") || fullExportMessage.includes("failed") ? "text-red-700" : "text-sky-700"}`}>
+                    {fullExportMessage}
+                  </p>
+                ) : null}
+              </div>
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                 <ZoneCard
                   title="Outcomes"

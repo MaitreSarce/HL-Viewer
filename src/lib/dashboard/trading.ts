@@ -56,7 +56,7 @@ export type TradingSummary = {
 };
 
 export type TradingApiResult = TradingSummary & {
-  source: "api";
+  source: "api" | "full_export";
   address: string;
   period: { startTime: number; endTime: number };
   meta: {
@@ -64,6 +64,7 @@ export type TradingApiResult = TradingSummary & {
     usedFallback: boolean;
     truncated: boolean;
     warnings: string[];
+    dataSourceLabel?: string;
   };
 };
 
@@ -154,7 +155,7 @@ const winrate = (bucket: TradingBucket) => {
 
 const normalizeCoin = (value: string) => value.trim().toUpperCase();
 
-const buildSpotCoinSet = (spotMeta: SpotMetaResponse, resolver: CoinResolver) => {
+export const buildSpotCoinSet = (spotMeta: SpotMetaResponse, resolver: CoinResolver) => {
   const known = new Set<string>();
   for (const pair of spotMeta.universe ?? []) {
     if (typeof pair.index === "number") {
@@ -171,7 +172,7 @@ const buildSpotCoinSet = (spotMeta: SpotMetaResponse, resolver: CoinResolver) =>
   return known;
 };
 
-const buildPerpCoinSet = (perpMeta: PerpMetaResponse) => {
+export const buildPerpCoinSet = (perpMeta: PerpMetaResponse) => {
   const known = new Set<string>();
   for (const asset of perpMeta.universe ?? []) {
     if (typeof asset.name === "string") {
@@ -182,7 +183,7 @@ const buildPerpCoinSet = (perpMeta: PerpMetaResponse) => {
   return known;
 };
 
-const buildOutcomeCoinSet = (outcomeMeta: OutcomeMetaResponse) => {
+export const buildOutcomeCoinSet = (outcomeMeta: OutcomeMetaResponse) => {
   const known = new Set<string>();
   const outcomeNameById = new Map<number, string>();
 
@@ -320,7 +321,7 @@ const matchUnitToken = (coinUpper: string): string | null => {
   return null;
 };
 
-const buildUnitSpotIdSet = (spotMeta: SpotMetaResponse) => {
+export const buildUnitSpotIdSet = (spotMeta: SpotMetaResponse) => {
   const known = new Set<string>();
   const tokenNameByIndex = new Map<number, string>();
   for (const token of spotMeta.tokens ?? []) {

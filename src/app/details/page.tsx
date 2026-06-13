@@ -44,11 +44,17 @@ export default function DetailsPage() {
         </div>
       </header>
 
-      <Block title="Trading (Hyperliquid API)">
+      <Block title="Trading data sources">
         <p>
           Source: `userFillsByTime` from timestamp 0 to now, with window splitting and de-duplication, plus `spotMeta`, `meta`, and
           `outcomeMeta` for market-type classification. If empty, fallback to `userFills`. Hyperliquid fill endpoints expose at most
           the latest 10,000 fills per wallet.
+        </p>
+        <p>
+          If the wallet is likely above that API window, the dashboard can request a full history export from the Hypedexer/Enigma
+          exporter referenced by Hyperliquid docs. The export is a `.csv.gz` file with `time, coin, dir, px, sz, ntl, fee, feeToken,
+          closedPnl, hash`, then the same classification and metric engine is reused. HL-Viewer limits this full export to one request
+          per wallet/user per UTC day and shows a quota message if the daily export is already used.
         </p>
         <p>Base formulas per fill:</p>
         <p>- Volume = `abs(px * sz)`</p>
@@ -85,7 +91,7 @@ export default function DetailsPage() {
         />
         <Metric
           name="Unit Volume / Fees / Trades"
-          explanation="Subset of Spot fills matched to Unit markets via spotMeta pair base token mapping (plus symbol fallback). Volume uses `abs(px * sz)`. Fees follow HyperUnitTracker logic: if `feeToken == USDC`, add `fee`; otherwise convert with `fee * px` (signed, so rebates can reduce net fees). Trades is the number of matched fills."
+          explanation="Subset of Spot fills matched to Unit markets via spotMeta pair base token mapping (plus symbol fallback). Volume uses `abs(px * sz)`. Stable fee tokens (`USDC`, `USDT`, `USDT0`, `USDE`, `USDH`, etc.) are already USD-like and are added as `fee`; explicit non-stable fee tokens are converted with `fee * px`. Trades is the number of matched fills."
         />
         <Metric
           name="Unit TWAB (USD)"
