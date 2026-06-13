@@ -392,6 +392,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const autoScanCompleteRef = useRef(false);
   const autoScanBlockedRef = useRef(false);
   const autoContinueRequestedRef = useRef(false);
+  const autoContinueInFlightRef = useRef(false);
 
   const setActiveApiScanId = useCallback((nextScanId: string) => {
     apiScanIdRef.current = nextScanId;
@@ -596,6 +597,8 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const onContinueApiScan = useCallback(async (options?: { automatic?: boolean }) => {
     if (autoScanCompleteRef.current) return;
     if (options?.automatic && autoScanBlockedRef.current) return;
+    if (options?.automatic && autoContinueInFlightRef.current) return;
+    autoContinueInFlightRef.current = true;
     setLoadingContinueApi(true);
     setError("");
     setApiScanMessage("Continuing Hyperliquid API scan from the remaining time windows...");
@@ -619,14 +622,18 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
+        const errorMessage = (payload as { error?: string }).error ?? "Continue API scan failed.";
+        if (errorMessage.includes("continuation state is unavailable") || errorMessage.includes("already complete")) {
+          setAutoScanBlockedState(true);
+          setApiScanMessage(`${errorMessage} Auto scan paused to avoid restarting from zero.`);
+          return;
+        }
         if (options?.automatic && autoContinueRequestedRef.current && trading?.meta?.apiScan?.canContinue) {
-          setApiScanMessage(
-            `${(payload as { error?: string }).error ?? "Continue API scan failed."} Auto scan will retry in a few seconds.`
-          );
+          setApiScanMessage(`${errorMessage} Auto scan will retry in a few seconds.`);
           return;
         }
         setAutoScanBlockedState(true);
-        setApiScanMessage((payload as { error?: string }).error ?? "Continue API scan failed.");
+        setApiScanMessage(errorMessage);
         return;
       }
 
@@ -651,7 +658,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
         setApiScanMessage(
           `API scan continued: ${formatNum(nextTrading.totals.fills)} fills recovered (${formatNum(Math.max(0, nextTrading.totals.fills - previousFills))} new). ${nextTrading.meta.apiScan.pendingWindows} time windows remain.`
         );
-      } else {
+      } else if (nextTrading.meta?.apiScan?.complete) {
         setAutoContinueApi(false);
         autoContinueRequestedRef.current = false;
         setAutoScanCompleteState(true);
@@ -669,6 +676,11 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
         setApiScanMessage(
           `Auto scan complete. All available Hyperliquid API fills were recovered: ${formatNum(nextTrading.totals.fills)} fills total (${formatNum(Math.max(0, nextTrading.totals.fills - previousFills))} new in the last scan).`
         );
+      } else {
+        setAutoScanBlockedState(true);
+        setApiScanMessage(
+          `Auto scan paused: the API scan is partial but no safe continuation window is available. Current results were kept: ${formatNum(nextTrading.totals.fills)} fills.`
+        );
       }
     } catch {
       setApiScanMessage(
@@ -677,6 +689,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
           : "Continue API scan failed. Current dashboard data is still displayed."
       );
     } finally {
+      autoContinueInFlightRef.current = false;
       setLoadingContinueApi(false);
       setApiScanElapsedMs(Date.now() - startedAt);
       void refreshApiScanProgress(currentScanId);
@@ -693,38 +706,20 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   useEffect(() => {
     if (
       autoContinueKick <= 0 ||
-      !autoContinueRequestedRef.current ||
       autoScanComplete ||
       autoScanBlocked ||
-      loadingTrading ||
-      loadingContinueApi ||
-      !trading?.meta?.apiScan?.canContinue
+      !autoContinueApi ||
+      !canContinueApiScan ||
+      autoContinueInFlightRef.current
     ) {
       return;
     }
     const timer = window.setTimeout(() => {
-      if (!autoContinueRequestedRef.current || autoScanCompleteRef.current || autoScanBlockedRef.current) return;
+      if (!autoContinueRequestedRef.current || autoContinueInFlightRef.current) return;
       void onContinueApiScan({ automatic: true });
     }, 2_000);
     return () => window.clearTimeout(timer);
-  }, [
-    autoContinueKick,
-    autoScanBlocked,
-    autoScanComplete,
-    loadingContinueApi,
-    loadingTrading,
-    onContinueApiScan,
-    trading?.meta?.apiScan?.canContinue,
-  ]);
-
-  useEffect(() => {
-    if (autoScanComplete || autoScanBlocked || !autoContinueApi || !canContinueApiScan) return;
-    const timer = window.setTimeout(() => {
-      if (!autoContinueRequestedRef.current) return;
-      void onContinueApiScan({ automatic: true });
-    }, 2_000);
-    return () => window.clearTimeout(timer);
-  }, [autoContinueApi, autoScanBlocked, autoScanComplete, canContinueApiScan, onContinueApiScan]);
+  }, [autoContinueApi, autoContinueKick, autoScanBlocked, autoScanComplete, canContinueApiScan, onContinueApiScan]);
 
   const isLoading = loadingApi || loadingContinueApi;
 
