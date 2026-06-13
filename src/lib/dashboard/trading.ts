@@ -152,9 +152,11 @@ const mergeFills = (existing: HyperliquidFill[], incoming: HyperliquidFill[]) =>
   return [...deduped.values()].sort((a, b) => getFillTime(a) - getFillTime(b));
 };
 
-export const getTradingScanProgress = (address: string) => {
+const tradingScanCacheKey = (address: string, scanId = "default") => `${address.toLowerCase()}:${scanId || "default"}`;
+
+export const getTradingScanProgress = (address: string, scanId?: string) => {
   cleanupTradingScanCache();
-  const cached = tradingScanCache.get(address.toLowerCase());
+  const cached = tradingScanCache.get(tradingScanCacheKey(address, scanId));
   if (!cached) {
     return {
       exists: false,
@@ -1114,12 +1116,12 @@ export const summarizeTradingFills = (
 
 export const fetchTradingStatsFromApi = async (
   address: string,
-  options: { continueScan?: boolean } = {}
+  options: { continueScan?: boolean; scanId?: string } = {}
 ): Promise<TradingApiResult> => {
   const endTime = Date.now();
   const startTime = 0;
   cleanupTradingScanCache();
-  const cacheKey = address.toLowerCase();
+  const cacheKey = tradingScanCacheKey(address, options.scanId);
   const cachedScan = tradingScanCache.get(cacheKey);
   const shouldContinueScan = Boolean(options.continueScan && cachedScan && cachedScan.pendingWindows.length > 0);
   const progressBaseRows = shouldContinueScan && cachedScan ? cachedScan.rows : [];
@@ -1146,7 +1148,7 @@ export const fetchTradingStatsFromApi = async (
       maxRequests: 160,
       initialWindows: shouldContinueScan ? cachedScan?.pendingWindows : undefined,
       onProgress: (progress) => {
-        const rows = progressBaseRows.length > 0 ? mergeFills(progressBaseRows, progress.rows) : progress.rows;
+        const rows = progressBaseRows.length > 0 ? mergeFills(progressBaseRows, progress.rows) : mergeFills([], progress.rows);
         tradingScanCache.set(cacheKey, {
           rows,
           pendingWindows: progress.pendingWindows,
@@ -1160,7 +1162,7 @@ export const fetchTradingStatsFromApi = async (
     }),
   ]);
 
-  let fills = shouldContinueScan && cachedScan ? mergeFills(cachedScan.rows, rangeResult.rows) : rangeResult.rows;
+  let fills = shouldContinueScan && cachedScan ? mergeFills(cachedScan.rows, rangeResult.rows) : mergeFills([], rangeResult.rows);
   const pendingWindows = rangeResult.pendingWindows;
   const scanComplete = pendingWindows.length === 0 && !rangeResult.truncated;
   tradingScanCache.set(cacheKey, {

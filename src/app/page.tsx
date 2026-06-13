@@ -132,6 +132,12 @@ const formatDuration = (ms: number) => {
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 };
+
+const createApiScanId = () => {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+};
+
 const formatTwabWithAge = (twab: number | null, ageDays: number | null, unit: "usd" | "raw") => {
   if (twab === null) return "N/A";
   const base = unit === "usd" ? formatUsd(twab) : formatNum(twab);
@@ -376,6 +382,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const [apiScanStartedAt, setApiScanStartedAt] = useState<number | null>(null);
   const [apiScanElapsedMs, setApiScanElapsedMs] = useState(0);
   const [autoContinueApi, setAutoContinueApi] = useState(false);
+  const [apiScanId, setApiScanId] = useState(createApiScanId);
 
   const [trading, setTrading] = useState<TradingData | null>(null);
   const [hevm, setHevm] = useState<HevmData | null>(null);
@@ -393,7 +400,11 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       !loadingApi &&
       !loadingContinueApi
   );
-  const displayedScanFills = apiScanProgress?.fills ?? trading?.meta?.apiScan?.cachedFills ?? trading?.totals.fills ?? 0;
+  const displayedScanFills = Math.max(
+    apiScanProgress?.fills ?? 0,
+    trading?.meta?.apiScan?.cachedFills ?? 0,
+    trading?.totals.fills ?? 0
+  );
   const displayedPendingWindows = apiScanProgress?.pendingWindows ?? trading?.meta?.apiScan?.pendingWindows ?? 0;
   const displayedRequestsUsed = apiScanProgress?.requestsUsed ?? 0;
   const scanIsActive = loadingApi || loadingContinueApi || Boolean(apiScanProgress?.inProgress);
@@ -402,7 +413,11 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     const wallet = address.trim();
     if (!wallet) return;
     try {
-      const response = await fetch(`/api/dashboard/trading/progress?address=${encodeURIComponent(wallet)}`, {
+      const params = new URLSearchParams({
+        address: wallet,
+        scanId: apiScanId,
+      });
+      const response = await fetch(`/api/dashboard/trading/progress?${params.toString()}`, {
         cache: "no-store",
         headers: {
           "Cache-Control": "no-cache",
@@ -415,7 +430,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     } catch {
       // Progress polling is best-effort; the main request still owns the final result.
     }
-  }, [address]);
+  }, [address, apiScanId]);
 
   useEffect(() => {
     if (!apiScanStartedAt || !scanIsActive) return;
@@ -439,12 +454,14 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     };
   }, [scanIsActive, refreshApiScanProgress]);
 
-  const onAnalyzeApi = async (event: FormEvent) => {
-    event.preventDefault();
+  const runAnalyzeApi = async (enableAutoContinue: boolean) => {
     setLoadingApi(true);
     setError("");
     setApiScanMessage("");
     setApiScanProgress(null);
+    setAutoContinueApi(enableAutoContinue);
+    const nextScanId = createApiScanId();
+    setApiScanId(nextScanId);
     const startedAt = Date.now();
     setApiScanStartedAt(startedAt);
     setApiScanElapsedMs(0);
@@ -452,6 +469,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     try {
       const params = new URLSearchParams({
         address: address.trim(),
+        scanId: nextScanId,
       });
 
       const safeCall = async (url: string) => {
@@ -509,6 +527,15 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     }
   };
 
+  const onAnalyzeApi = async (event: FormEvent) => {
+    event.preventDefault();
+    await runAnalyzeApi(false);
+  };
+
+  const onCompleteAnalyzeApi = async () => {
+    await runAnalyzeApi(true);
+  };
+
   const onContinueApiScan = useCallback(async () => {
     setLoadingContinueApi(true);
     setError("");
@@ -521,6 +548,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       const params = new URLSearchParams({
         address: address.trim(),
         continue: "1",
+        scanId: apiScanId,
       });
       const response = await fetch(`/api/dashboard/trading?${params.toString()}`, {
         cache: "no-store",
@@ -550,7 +578,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       setApiScanElapsedMs(Date.now() - startedAt);
       void refreshApiScanProgress();
     }
-  }, [address, refreshApiScanProgress, trading?.totals.fills]);
+  }, [address, apiScanId, refreshApiScanProgress, trading?.totals.fills]);
 
   useEffect(() => {
     if (!autoContinueApi || !canContinueApiScan) return;
@@ -596,7 +624,15 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
             disabled={isLoading}
             className="rounded-xl bg-slate-900 px-4 py-2 font-medium text-white transition hover:bg-slate-700 disabled:opacity-60"
           >
-            {loadingApi ? "Loading API..." : "Analyze via API"}
+            {loadingApi && !autoContinueApi ? "Loading API..." : "Quick Analyze via API"}
+          </button>
+          <button
+            type="button"
+            disabled={isLoading || !address.trim()}
+            onClick={onCompleteAnalyzeApi}
+            className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2 font-medium text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-60"
+          >
+            {loadingApi && autoContinueApi ? "Starting complete scan..." : "Complete Analyze via API"}
           </button>
           {sharePath ? (
             <Link href={sharePath} className="text-[11px] font-medium text-sky-700 underline underline-offset-2 hover:text-sky-900">
@@ -642,9 +678,20 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
             </div>
           </div>
           {apiScanMessage ? (
-            <p className={`mt-2 ${apiScanMessage.includes("failed") ? "text-red-700" : "text-emerald-700"}`}>
-              {apiScanMessage}
-            </p>
+            <div
+              className={`mt-3 flex items-center gap-3 rounded-xl px-3 py-2 ${
+                apiScanMessage.includes("failed")
+                  ? "bg-red-50 text-red-700"
+                  : loadingContinueApi && apiScanMessage.includes("Continuing Hyperliquid API scan")
+                    ? "bg-emerald-50 text-sm font-semibold text-emerald-800"
+                    : "bg-emerald-50 text-emerald-700"
+              }`}
+            >
+              {loadingContinueApi && apiScanMessage.includes("Continuing Hyperliquid API scan") ? (
+                <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-emerald-200 border-t-emerald-700" />
+              ) : null}
+              <p>{apiScanMessage}</p>
+            </div>
           ) : null}
           {autoContinueApi && canContinueApiScan && !loadingContinueApi ? (
             <p className="mt-2 text-emerald-700">Auto continuing is enabled. Next continuation starts in a few seconds.</p>
