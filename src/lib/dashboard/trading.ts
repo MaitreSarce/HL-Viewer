@@ -118,6 +118,8 @@ type TradingScanCache = {
   pendingWindows: TimeWindow[];
   complete: boolean;
   rateLimited: boolean;
+  inProgress: boolean;
+  requestsUsed: number;
   updatedAt: number;
 };
 
@@ -148,6 +150,36 @@ const mergeFills = (existing: HyperliquidFill[], incoming: HyperliquidFill[]) =>
   }
 
   return [...deduped.values()].sort((a, b) => getFillTime(a) - getFillTime(b));
+};
+
+export const getTradingScanProgress = (address: string) => {
+  cleanupTradingScanCache();
+  const cached = tradingScanCache.get(address.toLowerCase());
+  if (!cached) {
+    return {
+      exists: false,
+      fills: 0,
+      pendingWindows: 0,
+      complete: false,
+      canContinue: false,
+      rateLimited: false,
+      inProgress: false,
+      requestsUsed: 0,
+      updatedAt: null as number | null,
+    };
+  }
+
+  return {
+    exists: true,
+    fills: cached.rows.length,
+    pendingWindows: cached.pendingWindows.length,
+    complete: cached.complete,
+    canContinue: cached.pendingWindows.length > 0,
+    rateLimited: cached.rateLimited,
+    inProgress: cached.inProgress,
+    requestsUsed: cached.requestsUsed,
+    updatedAt: cached.updatedAt,
+  };
 };
 
 type TradingClassificationContext = {
@@ -1090,6 +1122,16 @@ export const fetchTradingStatsFromApi = async (
   const cacheKey = address.toLowerCase();
   const cachedScan = tradingScanCache.get(cacheKey);
   const shouldContinueScan = Boolean(options.continueScan && cachedScan && cachedScan.pendingWindows.length > 0);
+  const progressBaseRows = shouldContinueScan && cachedScan ? cachedScan.rows : [];
+  tradingScanCache.set(cacheKey, {
+    rows: progressBaseRows,
+    pendingWindows: shouldContinueScan && cachedScan ? cachedScan.pendingWindows : [{ startTime, endTime }],
+    complete: false,
+    rateLimited: false,
+    inProgress: true,
+    requestsUsed: 0,
+    updatedAt: Date.now(),
+  });
 
   const [spotMeta, perpMeta, rangeResult] = await Promise.all([
     fetchHyperliquidInfo<SpotMetaResponse>({ type: "spotMeta" }),
@@ -1103,6 +1145,18 @@ export const fetchTradingStatsFromApi = async (
       minWindowMs: 30 * 60 * 1000,
       maxRequests: 160,
       initialWindows: shouldContinueScan ? cachedScan?.pendingWindows : undefined,
+      onProgress: (progress) => {
+        const rows = progressBaseRows.length > 0 ? mergeFills(progressBaseRows, progress.rows) : progress.rows;
+        tradingScanCache.set(cacheKey, {
+          rows,
+          pendingWindows: progress.pendingWindows,
+          complete: progress.pendingWindows.length === 0 && !progress.truncated,
+          rateLimited: progress.rateLimited,
+          inProgress: true,
+          requestsUsed: progress.requestsUsed,
+          updatedAt: Date.now(),
+        });
+      },
     }),
   ]);
 
@@ -1114,6 +1168,8 @@ export const fetchTradingStatsFromApi = async (
     pendingWindows,
     complete: scanComplete,
     rateLimited: rangeResult.rateLimited,
+    inProgress: false,
+    requestsUsed: rangeResult.requestsUsed,
     updatedAt: Date.now(),
   });
   let usedFallback = false;

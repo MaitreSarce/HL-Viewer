@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 type TradingData = {
@@ -93,6 +93,17 @@ type UnitBridgeData = {
 
 type TabKey = "trading" | "hevm" | "unit";
 type HistogramGranularity = "day" | "week" | "month" | "year";
+type ApiScanProgress = {
+  exists: boolean;
+  fills: number;
+  pendingWindows: number;
+  complete: boolean;
+  canContinue: boolean;
+  rateLimited: boolean;
+  inProgress: boolean;
+  requestsUsed: number;
+  updatedAt: number | null;
+};
 
 const formatUsd = (value: number) =>
   new Intl.NumberFormat("en-US", {
@@ -115,6 +126,12 @@ const formatNum = (value: number) =>
   }).format(value);
 
 const formatPct = (value: number) => `${value.toFixed(2)}%`;
+const formatDuration = (ms: number) => {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+};
 const formatTwabWithAge = (twab: number | null, ageDays: number | null, unit: "usd" | "raw") => {
   if (twab === null) return "N/A";
   const base = unit === "usd" ? formatUsd(twab) : formatNum(twab);
@@ -353,10 +370,12 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const [histGranularity, setHistGranularity] = useState<HistogramGranularity>("day");
   const [loadingApi, setLoadingApi] = useState(false);
   const [loadingContinueApi, setLoadingContinueApi] = useState(false);
-  const [loadingFullExport, setLoadingFullExport] = useState(false);
   const [apiScanMessage, setApiScanMessage] = useState("");
-  const [fullExportMessage, setFullExportMessage] = useState("");
   const [error, setError] = useState("");
+  const [apiScanProgress, setApiScanProgress] = useState<ApiScanProgress | null>(null);
+  const [apiScanStartedAt, setApiScanStartedAt] = useState<number | null>(null);
+  const [apiScanElapsedMs, setApiScanElapsedMs] = useState(0);
+  const [autoContinueApi, setAutoContinueApi] = useState(false);
 
   const [trading, setTrading] = useState<TradingData | null>(null);
   const [hevm, setHevm] = useState<HevmData | null>(null);
@@ -368,15 +387,67 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const walletAgeDays = hevm?.stats?.sinceFirstTx?.days ?? null;
   const trimmedAddress = address.trim();
   const sharePath = trimmedAddress ? `/wallet/${encodeURIComponent(trimmedAddress)}` : "";
-  const canRequestFullExport = Boolean(trading && address.trim());
-  const canContinueApiScan = Boolean(trading && address.trim() && trading.meta?.apiScan?.canContinue);
+  const canContinueApiScan = Boolean(
+    address.trim() &&
+      (trading?.meta?.apiScan?.canContinue || apiScanProgress?.canContinue) &&
+      !loadingApi &&
+      !loadingContinueApi
+  );
+  const displayedScanFills = apiScanProgress?.fills ?? trading?.meta?.apiScan?.cachedFills ?? trading?.totals.fills ?? 0;
+  const displayedPendingWindows = apiScanProgress?.pendingWindows ?? trading?.meta?.apiScan?.pendingWindows ?? 0;
+  const displayedRequestsUsed = apiScanProgress?.requestsUsed ?? 0;
+  const scanIsActive = loadingApi || loadingContinueApi || Boolean(apiScanProgress?.inProgress);
+
+  const refreshApiScanProgress = useCallback(async () => {
+    const wallet = address.trim();
+    if (!wallet) return;
+    try {
+      const response = await fetch(`/api/dashboard/trading/progress?address=${encodeURIComponent(wallet)}`, {
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
+        },
+      });
+      if (!response.ok) return;
+      const payload = (await response.json()) as ApiScanProgress;
+      setApiScanProgress(payload);
+    } catch {
+      // Progress polling is best-effort; the main request still owns the final result.
+    }
+  }, [address]);
+
+  useEffect(() => {
+    if (!apiScanStartedAt || !scanIsActive) return;
+    const timer = window.setInterval(() => {
+      setApiScanElapsedMs(Date.now() - apiScanStartedAt);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [apiScanStartedAt, scanIsActive]);
+
+  useEffect(() => {
+    if (!scanIsActive) return;
+    const immediate = window.setTimeout(() => {
+      void refreshApiScanProgress();
+    }, 0);
+    const timer = window.setInterval(() => {
+      void refreshApiScanProgress();
+    }, 1500);
+    return () => {
+      window.clearTimeout(immediate);
+      window.clearInterval(timer);
+    };
+  }, [scanIsActive, refreshApiScanProgress]);
 
   const onAnalyzeApi = async (event: FormEvent) => {
     event.preventDefault();
     setLoadingApi(true);
     setError("");
     setApiScanMessage("");
-    setFullExportMessage("");
+    setApiScanProgress(null);
+    const startedAt = Date.now();
+    setApiScanStartedAt(startedAt);
+    setApiScanElapsedMs(0);
 
     try {
       const params = new URLSearchParams({
@@ -433,13 +504,18 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       setError("Unable to load dashboard data.");
     } finally {
       setLoadingApi(false);
+      setApiScanElapsedMs(Date.now() - startedAt);
+      void refreshApiScanProgress();
     }
   };
 
-  const onContinueApiScan = async () => {
+  const onContinueApiScan = useCallback(async () => {
     setLoadingContinueApi(true);
     setError("");
     setApiScanMessage("Continuing Hyperliquid API scan from the remaining time windows...");
+    const startedAt = Date.now();
+    setApiScanStartedAt(startedAt);
+    setApiScanElapsedMs(0);
 
     try {
       const params = new URLSearchParams({
@@ -471,55 +547,20 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       setApiScanMessage("Continue API scan failed. Current dashboard data is still displayed.");
     } finally {
       setLoadingContinueApi(false);
+      setApiScanElapsedMs(Date.now() - startedAt);
+      void refreshApiScanProgress();
     }
-  };
+  }, [address, refreshApiScanProgress, trading?.totals.fills]);
 
-  const onFetchFullHistory = async () => {
-    setLoadingFullExport(true);
-    setError("");
-    setFullExportMessage(
-      "Full history export in progress. This can take a few minutes for active wallets. Please keep this page open."
-    );
+  useEffect(() => {
+    if (!autoContinueApi || !canContinueApiScan) return;
+    const timer = window.setTimeout(() => {
+      void onContinueApiScan();
+    }, 4_000);
+    return () => window.clearTimeout(timer);
+  }, [autoContinueApi, canContinueApiScan, onContinueApiScan]);
 
-    try {
-      const response = await fetch("/api/dashboard/trading-full", {
-        method: "POST",
-        cache: "no-store",
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "no-cache",
-          Pragma: "no-cache",
-        },
-        body: JSON.stringify({ address: address.trim() }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const message = (payload as { error?: string }).error ?? "Full history export failed.";
-        setFullExportMessage(message);
-        return;
-      }
-      const fullExportTrading = payload as TradingData;
-      const currentFills = trading?.totals.fills ?? 0;
-      const fullExportFills = fullExportTrading.totals.fills;
-
-      if (!trading || fullExportFills > currentFills) {
-        setTrading(fullExportTrading);
-        setFullExportMessage(
-          `Selected source: Full history export. The export loaded ${formatNum(fullExportFills)} fills, which is more than the current Hyperliquid API data (${formatNum(currentFills)} fills).`
-        );
-      } else {
-        setFullExportMessage(
-          `Selected source: Hyperliquid API. The full history export loaded ${formatNum(fullExportFills)} fills, but current API data has ${formatNum(currentFills)} fills, so HL-Viewer kept the API values.`
-        );
-      }
-    } catch {
-      setFullExportMessage("Full history export failed. Standard Hyperliquid API data is still displayed.");
-    } finally {
-      setLoadingFullExport(false);
-    }
-  };
-
-  const isLoading = loadingApi || loadingContinueApi || loadingFullExport;
+  const isLoading = loadingApi || loadingContinueApi;
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-8 md:px-8">
@@ -564,6 +605,52 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
           ) : null}
         </div>
       </form>
+
+      {(trading || scanIsActive || apiScanMessage) ? (
+        <section className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-slate-700">
+                Active source: {trading?.meta?.dataSourceLabel ?? (trading?.source === "full_export" ? "Full history export" : "Hyperliquid API")}
+              </p>
+              <p>Standard Hyperliquid API is the primary source. HL-Viewer splits requests by time to recover as many fills as possible.</p>
+              <p className="text-slate-500">
+                API scan status: {trading?.meta?.apiScan?.complete || apiScanProgress?.complete ? "complete" : "partial"} - {formatNum(displayedScanFills)} fills cached
+                {displayedPendingWindows > 0 ? ` - ${displayedPendingWindows} windows remaining` : ""}
+                {displayedRequestsUsed > 0 ? ` - ${displayedRequestsUsed} requests in current run` : ""}
+                {apiScanStartedAt ? ` - ${formatDuration(apiScanElapsedMs)}` : ""}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={autoContinueApi}
+                  onChange={(event) => setAutoContinueApi(event.target.checked)}
+                  className="h-4 w-4"
+                />
+                Auto continuing
+              </label>
+              <button
+                type="button"
+                disabled={!canContinueApiScan}
+                onClick={onContinueApiScan}
+                className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-50"
+              >
+                {loadingContinueApi ? "Continuing API scan..." : "Continue API scan"}
+              </button>
+            </div>
+          </div>
+          {apiScanMessage ? (
+            <p className={`mt-2 ${apiScanMessage.includes("failed") ? "text-red-700" : "text-emerald-700"}`}>
+              {apiScanMessage}
+            </p>
+          ) : null}
+          {autoContinueApi && canContinueApiScan && !loadingContinueApi ? (
+            <p className="mt-2 text-emerald-700">Auto continuing is enabled. Next continuation starts in a few seconds.</p>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="rounded-2xl border border-white/60 bg-white/50 px-4 py-3 text-xs text-slate-500">
         <p>Thank you for your support.</p>
@@ -630,57 +717,6 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
         <section className="space-y-4">
           {trading ? (
             <>
-              <p className="text-sm text-slate-600">
-                Active source: {trading.meta?.dataSourceLabel ?? (trading.source === "full_export" ? "Full history export" : "Hyperliquid API")}
-              </p>
-              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600 shadow-sm">
-                {trading.source === "full_export" ? (
-                  <p className="font-medium text-emerald-700">Full history export loaded. Fill-based trading stats use the complete exported history.</p>
-                ) : (
-                  <div className="space-y-2">
-                    <p>Standard Hyperliquid API is the primary source. HL-Viewer splits requests by time to recover as many fills as possible.</p>
-                    {trading.meta?.apiScan ? (
-                      <p className="text-slate-500">
-                        API scan status: {trading.meta.apiScan.complete ? "complete" : "partial"} · {formatNum(trading.meta.apiScan.cachedFills)} fills cached
-                        {trading.meta.apiScan.canContinue ? ` · ${trading.meta.apiScan.pendingWindows} windows remaining` : ""}
-                      </p>
-                    ) : null}
-                    <button
-                      type="button"
-                      disabled={!canContinueApiScan || loadingContinueApi}
-                      onClick={onContinueApiScan}
-                      className="mr-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-50"
-                    >
-                      {loadingContinueApi ? "Continuing API scan..." : "Continue API scan"}
-                    </button>
-                    <p className="text-slate-500">
-                      Full history export is limited to one request per wallet/user per UTC day. If the daily quota is reached, the app keeps
-                      showing standard API data and explains when to retry.
-                    </p>
-                    <p className="text-slate-500">
-                      After export, HL-Viewer compares fill counts and keeps the source with the most fills instead of replacing API data blindly.
-                    </p>
-                    <button
-                      type="button"
-                      disabled={!canRequestFullExport || loadingFullExport}
-                      onClick={onFetchFullHistory}
-                      className="rounded-xl bg-sky-700 px-4 py-2 text-xs font-semibold text-white transition hover:bg-sky-600 disabled:opacity-60"
-                    >
-                      {loadingFullExport ? "Fetching full history..." : "Fetch full history"}
-                    </button>
-                  </div>
-                )}
-                {apiScanMessage ? (
-                  <p className={`mt-2 ${apiScanMessage.includes("failed") ? "text-red-700" : "text-emerald-700"}`}>
-                    {apiScanMessage}
-                  </p>
-                ) : null}
-                {fullExportMessage ? (
-                  <p className={`mt-2 ${fullExportMessage.includes("limit reached") || fullExportMessage.includes("failed") ? "text-red-700" : "text-sky-700"}`}>
-                    {fullExportMessage}
-                  </p>
-                ) : null}
-              </div>
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                 <ZoneCard
                   title="Outcomes"

@@ -210,7 +210,7 @@ export type RangeFetchResult<T> = {
   pendingWindows: TimeWindow[];
 };
 
-type SplitFetchOptions = {
+type SplitFetchOptions<T extends TimeScopedRow> = {
   type: string;
   user: string;
   startTime: number;
@@ -220,10 +220,11 @@ type SplitFetchOptions = {
   maxRequests?: number;
   extraBody?: Record<string, unknown>;
   initialWindows?: TimeWindow[];
+  onProgress?: (progress: RangeFetchResult<T>) => void;
 };
 
 export const fetchTimeRangeWithSplit = async <T extends TimeScopedRow>(
-  options: SplitFetchOptions
+  options: SplitFetchOptions<T>
 ): Promise<RangeFetchResult<T>> => {
   const {
     type,
@@ -235,6 +236,7 @@ export const fetchTimeRangeWithSplit = async <T extends TimeScopedRow>(
     maxRequests = 140,
     extraBody = {},
     initialWindows,
+    onProgress,
   } = options;
 
   const queue: TimeWindow[] = initialWindows && initialWindows.length > 0 ? [...initialWindows] : [{ startTime, endTime }];
@@ -244,10 +246,28 @@ export const fetchTimeRangeWithSplit = async <T extends TimeScopedRow>(
   let rateLimited = false;
   let pendingWindows: TimeWindow[] = [];
 
+  const reportProgress = () => {
+    if (!onProgress) return;
+    const deduped = new Map<string, T>();
+    for (let i = 0; i < buffered.length; i += 1) {
+      const row = buffered[i];
+      deduped.set(rowKey(row, i), row);
+    }
+    const rows = [...deduped.values()].sort((a, b) => rowTime(a) - rowTime(b));
+    onProgress({
+      rows,
+      requestsUsed,
+      truncated,
+      rateLimited,
+      pendingWindows: pendingWindows.length > 0 ? pendingWindows : [...queue],
+    });
+  };
+
   while (queue.length > 0) {
     if (requestsUsed >= maxRequests) {
       truncated = true;
       pendingWindows = [...queue];
+      reportProgress();
       break;
     }
 
@@ -274,6 +294,7 @@ export const fetchTimeRangeWithSplit = async <T extends TimeScopedRow>(
         rateLimited = true;
         truncated = true;
         pendingWindows = [current, ...queue];
+        reportProgress();
         break;
       }
       throw error;
@@ -292,6 +313,7 @@ export const fetchTimeRangeWithSplit = async <T extends TimeScopedRow>(
       if (mid <= current.startTime || mid >= current.endTime) {
         buffered.push(...rows);
         truncated = true;
+        reportProgress();
         continue;
       }
 
@@ -305,6 +327,7 @@ export const fetchTimeRangeWithSplit = async <T extends TimeScopedRow>(
     }
 
     buffered.push(...rows);
+    reportProgress();
   }
 
   const deduped = new Map<string, T>();
