@@ -1203,8 +1203,8 @@ export const fetchTradingStatsFromApi = async (
     startTime,
     endTime,
     pageLimit: 2000,
-    minWindowMs: 30 * 60 * 1000,
-    maxRequests: 160,
+    minWindowMs: 1,
+    maxRequests: 260,
     initialWindows: shouldContinueScan ? scanWindows : undefined,
     onProgress: (progress) => {
       const rows = progressBaseRows.length > 0 ? mergeFills(progressBaseRows, progress.rows) : mergeFills([], progress.rows);

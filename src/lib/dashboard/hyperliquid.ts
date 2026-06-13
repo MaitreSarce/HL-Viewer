@@ -324,6 +324,9 @@ export const fetchTimeRangeWithSplit = async <T extends TimeScopedRow>(
 
     if (rows.length >= pageLimit) {
       truncated = true;
+      pendingWindows = [current, ...queue];
+      reportProgress();
+      break;
     }
 
     buffered.push(...rows);
