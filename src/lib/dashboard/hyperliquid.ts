@@ -97,32 +97,52 @@ export class RemoteApiError extends Error {
   payload: unknown;
 
   constructor(status: number, payload: unknown) {
-    super(extractRemoteError(payload));
+    super(
+      status === 429
+        ? "Hyperliquid API rate limit reached while loading data. Please retry in a minute."
+        : extractRemoteError(payload)
+    );
     this.status = status;
     this.payload = payload;
   }
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export const fetchHyperliquidInfo = async <T>(body: JsonBody): Promise<T> => {
-  const response = await fetch(HYPERLIQUID_INFO_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    cache: "no-store",
-  });
+  const retryDelaysMs = [700, 1_500, 3_000, 6_000];
 
-  let payload: unknown = null;
-  try {
-    payload = await response.json();
-  } catch {
-    payload = null;
-  }
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+    const response = await fetch(HYPERLIQUID_INFO_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
 
-  if (!response.ok) {
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+
+    if (response.ok) {
+      return payload as T;
+    }
+
+    const retryable = response.status === 429 || response.status >= 500;
+    if (retryable && attempt < retryDelaysMs.length) {
+      const retryAfter = Number(response.headers.get("retry-after"));
+      const delayMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : retryDelaysMs[attempt];
+      await sleep(delayMs);
+      continue;
+    }
+
     throw new RemoteApiError(response.status, payload);
   }
 
-  return payload as T;
+  throw new RemoteApiError(500, null);
 };
 
 const safePairName = (pairName: string | undefined, base: string, quote: string) => {

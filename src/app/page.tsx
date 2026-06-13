@@ -399,19 +399,20 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       if (tradingRes.ok) {
         setTrading(tradingRes.payload as TradingData);
       } else {
-        failures.push((tradingRes.payload as { error?: string }).error ?? "Trading API failed.");
+        const message = (tradingRes.payload as { error?: string }).error ?? "Trading API failed.";
+        failures.push(`Hyperliquid trading stats failed: ${message}. HEVM and Unit Bridge sections may still be available.`);
       }
 
       if (hevmRes.ok) {
         setHevm(hevmRes.payload as HevmData);
       } else {
-        failures.push((hevmRes.payload as { error?: string }).error ?? "HEVM API failed.");
+        failures.push(`HEVM stats failed: ${(hevmRes.payload as { error?: string }).error ?? "HEVM API failed."}`);
       }
 
       if (unitRes.ok) {
         setUnitBridge(unitRes.payload as UnitBridgeData);
       } else {
-        failures.push((unitRes.payload as { error?: string }).error ?? "Unit bridge API failed.");
+        failures.push(`Unit Bridge stats failed: ${(unitRes.payload as { error?: string }).error ?? "Unit bridge API failed."}`);
       }
 
       if (failures.length > 0) {
