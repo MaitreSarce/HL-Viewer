@@ -1083,7 +1083,7 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
   if (rangeResult.truncated) {
     warnings.push("The API window was dense and had to be split; some rows may still be truncated by API limits.");
   }
-  warnings.push("Hyperliquid only exposes up to the 10000 most recent fills per wallet on fill endpoints.");
+  warnings.push("Hyperliquid fills are loaded with time-window splitting and de-duplication; very dense wallets can still hit API rate limits.");
   warnings.push(
     "Spot TWAB is computed from spot fills as a reconstructed time-weighted USD balance (fill-price based, using pair quotes and propagated USD cross-prices when possible)."
   );

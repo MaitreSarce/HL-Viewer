@@ -236,7 +236,7 @@ export const fetchTradingStatsFromFullExport = async (
   const endTime = Date.now();
   const warnings: string[] = [
     "Data source: Hypedexer/Enigma full history export (.csv.gz).",
-    "Full export is intended for wallets that exceed the standard Hyperliquid 10,000 fills API window.",
+    "Full export is an alternative data source; HL-Viewer compares fill counts before replacing API values.",
     `Full export is requested from ${FULL_EXPORT_START_DATE} to tomorrow UTC to cover early Hyperliquid trading history.`,
     "Full export quota is limited to one request per wallet/user per UTC day in HL-Viewer.",
   ];

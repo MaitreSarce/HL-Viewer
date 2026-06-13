@@ -449,8 +449,20 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
         setFullExportMessage(message);
         return;
       }
-      setTrading(payload as TradingData);
-      setFullExportMessage("Full history export loaded. Complete trading history is now used for fill-based stats.");
+      const fullExportTrading = payload as TradingData;
+      const currentFills = trading?.totals.fills ?? 0;
+      const fullExportFills = fullExportTrading.totals.fills;
+
+      if (!trading || fullExportFills > currentFills) {
+        setTrading(fullExportTrading);
+        setFullExportMessage(
+          `Selected source: Full history export. The export loaded ${formatNum(fullExportFills)} fills, which is more than the current Hyperliquid API data (${formatNum(currentFills)} fills).`
+        );
+      } else {
+        setFullExportMessage(
+          `Selected source: Hyperliquid API. The full history export loaded ${formatNum(fullExportFills)} fills, but current API data has ${formatNum(currentFills)} fills, so HL-Viewer kept the API values.`
+        );
+      }
     } catch {
       setFullExportMessage("Full history export failed. Standard Hyperliquid API data is still displayed.");
     } finally {
@@ -496,7 +508,6 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
           >
             {loadingApi ? "Loading API..." : "Analyze via API"}
           </button>
-          <p className="text-[11px] text-amber-700">Warning: API trading stats count up to the most recent 10,000 fills.</p>
           {sharePath ? (
             <Link href={sharePath} className="text-[11px] font-medium text-sky-700 underline underline-offset-2 hover:text-sky-900">
               Shareable link
@@ -578,13 +589,13 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
                   <p className="font-medium text-emerald-700">Full history export loaded. Fill-based trading stats use the complete exported history.</p>
                 ) : (
                   <div className="space-y-2">
-                    <p>
-                      Standard Hyperliquid API is fast, but it only exposes the 10,000 most recent fills. If this wallet is very active,
-                      older trades may be missing from fill-based stats.
-                    </p>
+                    <p>Standard Hyperliquid API is the primary source. HL-Viewer splits requests by time to recover as many fills as possible.</p>
                     <p className="text-slate-500">
                       Full history export is limited to one request per wallet/user per UTC day. If the daily quota is reached, the app keeps
                       showing standard API data and explains when to retry.
+                    </p>
+                    <p className="text-slate-500">
+                      After export, HL-Viewer compares fill counts and keeps the source with the most fills instead of replacing API data blindly.
                     </p>
                     <button
                       type="button"
