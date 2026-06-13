@@ -619,6 +619,12 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
+        if (options?.automatic && autoContinueRequestedRef.current && trading?.meta?.apiScan?.canContinue) {
+          setApiScanMessage(
+            `${(payload as { error?: string }).error ?? "Continue API scan failed."} Auto scan will retry in a few seconds.`
+          );
+          return;
+        }
         setAutoScanBlockedState(true);
         setApiScanMessage((payload as { error?: string }).error ?? "Continue API scan failed.");
         return;
@@ -627,6 +633,12 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       const nextTrading = payload as TradingData;
       const previousFills = trading?.totals.fills ?? 0;
       if (nextTrading.totals.fills < previousFills) {
+        if (options?.automatic && autoContinueRequestedRef.current && trading?.meta?.apiScan?.canContinue) {
+          setApiScanMessage(
+            `Temporary continuation returned fewer fills (${formatNum(nextTrading.totals.fills)}) than the current dashboard (${formatNum(previousFills)}). Current results were kept and auto scan will retry in a few seconds.`
+          );
+          return;
+        }
         setAutoScanBlockedState(true);
         setApiScanMessage(
           `Auto scan paused because the continuation returned fewer fills (${formatNum(nextTrading.totals.fills)}) than the current dashboard (${formatNum(previousFills)}). Current results were kept.`
@@ -659,13 +671,24 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
         );
       }
     } catch {
-      setApiScanMessage("Continue API scan failed. Current dashboard data is still displayed.");
+      setApiScanMessage(
+        options?.automatic
+          ? "Continue API scan failed. Current dashboard data is still displayed and auto scan will retry in a few seconds."
+          : "Continue API scan failed. Current dashboard data is still displayed."
+      );
     } finally {
       setLoadingContinueApi(false);
       setApiScanElapsedMs(Date.now() - startedAt);
       void refreshApiScanProgress(currentScanId);
     }
-  }, [address, refreshApiScanProgress, setAutoScanBlockedState, setAutoScanCompleteState, trading?.totals.fills]);
+  }, [
+    address,
+    refreshApiScanProgress,
+    setAutoScanBlockedState,
+    setAutoScanCompleteState,
+    trading?.meta?.apiScan?.canContinue,
+    trading?.totals.fills,
+  ]);
 
   useEffect(() => {
     if (
