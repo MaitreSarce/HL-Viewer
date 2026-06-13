@@ -375,6 +375,9 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const [activeTab, setActiveTab] = useState<TabKey>("trading");
   const [histGranularity, setHistGranularity] = useState<HistogramGranularity>("day");
   const [loadingApi, setLoadingApi] = useState(false);
+  const [loadingTrading, setLoadingTrading] = useState(false);
+  const [loadingHevm, setLoadingHevm] = useState(false);
+  const [loadingUnitBridge, setLoadingUnitBridge] = useState(false);
   const [loadingContinueApi, setLoadingContinueApi] = useState(false);
   const [apiScanMessage, setApiScanMessage] = useState("");
   const [error, setError] = useState("");
@@ -416,7 +419,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     address.trim() &&
       (trading?.meta?.apiScan?.canContinue || apiScanProgress?.canContinue) &&
       !autoScanComplete &&
-      !loadingApi &&
+      !loadingTrading &&
       !loadingContinueApi
   );
   const displayedScanFills = Math.max(
@@ -426,12 +429,12 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   );
   const displayedPendingWindows = apiScanProgress?.pendingWindows ?? trading?.meta?.apiScan?.pendingWindows ?? 0;
   const displayedRequestsUsed = apiScanProgress?.requestsUsed ?? 0;
-  const scanIsActive = loadingApi || loadingContinueApi || Boolean(apiScanProgress?.inProgress);
+  const scanIsActive = loadingTrading || loadingContinueApi || Boolean(apiScanProgress?.inProgress);
   const autoScanWaitingForNextRun = autoContinueApi && canContinueApiScan && !autoScanComplete && !autoScanBlocked;
   const tabStates: Record<TabKey, { loading: boolean; loaded: boolean }> = {
-    trading: { loading: loadingApi || loadingContinueApi || autoScanWaitingForNextRun, loaded: Boolean(trading) && !autoScanWaitingForNextRun },
-    hevm: { loading: loadingApi, loaded: Boolean(hevm) },
-    unit: { loading: loadingApi, loaded: Boolean(unitBridge) },
+    trading: { loading: loadingTrading || loadingContinueApi || autoScanWaitingForNextRun, loaded: Boolean(trading) && !autoScanWaitingForNextRun },
+    hevm: { loading: loadingHevm, loaded: Boolean(hevm) },
+    unit: { loading: loadingUnitBridge, loaded: Boolean(unitBridge) },
   };
 
   const refreshApiScanProgress = useCallback(async (scanIdOverride?: string) => {
@@ -481,9 +484,15 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
 
   const runAnalyzeApi = async (enableAutoContinue: boolean) => {
     setLoadingApi(true);
+    setLoadingTrading(true);
+    setLoadingHevm(true);
+    setLoadingUnitBridge(true);
     setError("");
     setApiScanMessage("");
     setApiScanProgress(null);
+    setTrading(null);
+    setHevm(null);
+    setUnitBridge(null);
     setAutoScanCompleteState(false);
     setAutoScanBlockedState(false);
     setAutoContinueApi(enableAutoContinue);
@@ -493,63 +502,72 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     setApiScanStartedAt(startedAt);
     setApiScanElapsedMs(0);
 
-    try {
-      const params = new URLSearchParams({
-        address: address.trim(),
-        scanId: nextScanId,
+    const appendError = (message: string) => {
+      setError((current) => (current ? `${current} ${message}` : message));
+    };
+
+    const params = new URLSearchParams({
+      address: address.trim(),
+      scanId: nextScanId,
+    });
+
+    const safeCall = async (url: string) => {
+      try {
+        const response = await fetch(url, {
+          cache: "no-store",
+          headers: {
+            "Cache-Control": "no-cache",
+            Pragma: "no-cache",
+          },
+        });
+        const payload = await response.json().catch(() => ({}));
+        return { ok: response.ok, payload };
+      } catch (e) {
+        return { ok: false, payload: { error: e instanceof Error ? e.message : "Network error." } };
+      }
+    };
+
+    const tradingTask = safeCall(`/api/dashboard/trading?${params.toString()}`)
+      .then((tradingRes) => {
+        if (tradingRes.ok) {
+          setTrading(tradingRes.payload as TradingData);
+        } else {
+          setAutoScanBlockedState(true);
+          setApiScanMessage("Auto scan paused because Hyperliquid trading stats returned an error. You can retry manually with Continue API scan.");
+          const message = (tradingRes.payload as { error?: string }).error ?? "Trading API failed.";
+          appendError(`Hyperliquid trading stats failed: ${message}. HEVM and Unit Bridge sections may still be available.`);
+        }
+      })
+      .finally(() => {
+        setLoadingTrading(false);
       });
 
-      const safeCall = async (url: string) => {
-        try {
-          const response = await fetch(url, {
-            cache: "no-store",
-            headers: {
-              "Cache-Control": "no-cache",
-              Pragma: "no-cache",
-            },
-          });
-          const payload = await response.json().catch(() => ({}));
-          return { ok: response.ok, payload };
-        } catch (e) {
-          return { ok: false, payload: { error: e instanceof Error ? e.message : "Network error." } };
+    const hevmTask = safeCall(`/api/dashboard/hevm?address=${encodeURIComponent(address.trim())}`)
+      .then((hevmRes) => {
+        if (hevmRes.ok) {
+          setHevm(hevmRes.payload as HevmData);
+        } else {
+          appendError(`HEVM stats failed: ${(hevmRes.payload as { error?: string }).error ?? "HEVM API failed."}`);
         }
-      };
+      })
+      .finally(() => {
+        setLoadingHevm(false);
+      });
 
-      const [tradingRes, hevmRes, unitRes] = await Promise.all([
-        safeCall(`/api/dashboard/trading?${params.toString()}`),
-        safeCall(`/api/dashboard/hevm?address=${encodeURIComponent(address.trim())}`),
-        safeCall(`/api/dashboard/unit-bridge?address=${encodeURIComponent(address.trim())}`),
-      ]);
+    const unitTask = safeCall(`/api/dashboard/unit-bridge?address=${encodeURIComponent(address.trim())}`)
+      .then((unitRes) => {
+        if (unitRes.ok) {
+          setUnitBridge(unitRes.payload as UnitBridgeData);
+        } else {
+          appendError(`Unit Bridge stats failed: ${(unitRes.payload as { error?: string }).error ?? "Unit bridge API failed."}`);
+        }
+      })
+      .finally(() => {
+        setLoadingUnitBridge(false);
+      });
 
-      const failures: string[] = [];
-
-      if (tradingRes.ok) {
-        setTrading(tradingRes.payload as TradingData);
-      } else {
-        setAutoContinueApi(false);
-        setAutoScanBlockedState(true);
-        setApiScanMessage("Auto scan paused because Hyperliquid trading stats returned an error. You can retry manually with Continue API scan.");
-        const message = (tradingRes.payload as { error?: string }).error ?? "Trading API failed.";
-        failures.push(`Hyperliquid trading stats failed: ${message}. HEVM and Unit Bridge sections may still be available.`);
-      }
-
-      if (hevmRes.ok) {
-        setHevm(hevmRes.payload as HevmData);
-      } else {
-        failures.push(`HEVM stats failed: ${(hevmRes.payload as { error?: string }).error ?? "HEVM API failed."}`);
-      }
-
-      if (unitRes.ok) {
-        setUnitBridge(unitRes.payload as UnitBridgeData);
-      } else {
-        failures.push(`Unit Bridge stats failed: ${(unitRes.payload as { error?: string }).error ?? "Unit bridge API failed."}`);
-      }
-
-      if (failures.length > 0) {
-        setError(failures.join(" "));
-      }
-    } catch {
-      setError("Unable to load dashboard data.");
+    try {
+      await Promise.allSettled([tradingTask, hevmTask, unitTask]);
     } finally {
       setLoadingApi(false);
       setApiScanElapsedMs(Date.now() - startedAt);
@@ -592,7 +610,6 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setAutoContinueApi(false);
         setAutoScanBlockedState(true);
         setApiScanMessage((payload as { error?: string }).error ?? "Continue API scan failed.");
         return;
@@ -601,7 +618,6 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       const nextTrading = payload as TradingData;
       const previousFills = trading?.totals.fills ?? 0;
       if (nextTrading.totals.fills < previousFills) {
-        setAutoContinueApi(false);
         setAutoScanBlockedState(true);
         setApiScanMessage(
           `Auto scan paused because the continuation returned fewer fills (${formatNum(nextTrading.totals.fills)}) than the current dashboard (${formatNum(previousFills)}). Current results were kept.`
