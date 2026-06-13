@@ -624,6 +624,11 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       if (!response.ok) {
         const errorMessage = (payload as { error?: string }).error ?? "Continue API scan failed.";
         if (errorMessage.includes("continuation state is unavailable") || errorMessage.includes("already complete")) {
+          if (options?.automatic && autoContinueRequestedRef.current && trading?.meta?.apiScan?.canContinue) {
+            setApiScanMessage(`${errorMessage} Auto scan will retry in a few seconds.`);
+            setAutoContinueKick((value) => value + 1);
+            return;
+          }
           setAutoScanBlockedState(true);
           setApiScanMessage(`${errorMessage} Auto scan paused to avoid restarting from zero.`);
           return;
@@ -655,6 +660,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       setTrading(nextTrading);
       if (nextTrading.meta?.apiScan?.canContinue) {
         setAutoScanBlockedState(false);
+        setAutoContinueKick((value) => value + 1);
         setApiScanMessage(
           `API scan continued: ${formatNum(nextTrading.totals.fills)} fills recovered (${formatNum(Math.max(0, nextTrading.totals.fills - previousFills))} new). ${nextTrading.meta.apiScan.pendingWindows} time windows remain.`
         );
