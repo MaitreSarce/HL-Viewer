@@ -9,6 +9,7 @@ import {
   getFillTime,
   HyperliquidFill,
   SpotMetaResponse,
+  TimeWindow,
 } from "@/lib/dashboard/hyperliquid";
 import { readStringKeys, toFiniteNumber } from "@/lib/dashboard/shared";
 import { computeTwabSeriesUsdFromValuePoints, computeTwabUsdFromValuePoints } from "@/lib/dashboard/twab";
@@ -65,6 +66,13 @@ export type TradingApiResult = TradingSummary & {
     truncated: boolean;
     warnings: string[];
     dataSourceLabel?: string;
+    apiScan?: {
+      complete: boolean;
+      canContinue: boolean;
+      pendingWindows: number;
+      cachedFills: number;
+      rateLimited: boolean;
+    };
   };
 };
 
@@ -104,6 +112,43 @@ type DelegatorSummary = {
 };
 
 type CoinResolver = (rawCoin: string) => string;
+
+type TradingScanCache = {
+  rows: HyperliquidFill[];
+  pendingWindows: TimeWindow[];
+  complete: boolean;
+  rateLimited: boolean;
+  updatedAt: number;
+};
+
+const TRADING_SCAN_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const tradingScanCache = new Map<string, TradingScanCache>();
+
+const cleanupTradingScanCache = () => {
+  const now = Date.now();
+  for (const [key, value] of tradingScanCache) {
+    if (now - value.updatedAt > TRADING_SCAN_CACHE_TTL_MS) tradingScanCache.delete(key);
+  }
+};
+
+const mergeFills = (existing: HyperliquidFill[], incoming: HyperliquidFill[]) => {
+  const deduped = new Map<string, HyperliquidFill>();
+  const keyFor = (fill: HyperliquidFill, index: number) =>
+    `${typeof fill.hash === "string" ? fill.hash : ""}:${String(fill.tid ?? "")}:${String(fill.time ?? fill.timestamp ?? "")}:${String(fill.coin ?? "")}:${String(fill.dir ?? fill.side ?? "")}:${String(fill.sz ?? "")}:${String(fill.px ?? "")}:${index}`;
+
+  for (let i = 0; i < existing.length; i += 1) {
+    const fill = existing[i];
+    const stableKey = typeof fill.hash === "string" && fill.tid !== undefined ? `${fill.hash}:${String(fill.tid)}` : keyFor(fill, i);
+    deduped.set(stableKey, fill);
+  }
+  for (let i = 0; i < incoming.length; i += 1) {
+    const fill = incoming[i];
+    const stableKey = typeof fill.hash === "string" && fill.tid !== undefined ? `${fill.hash}:${String(fill.tid)}` : keyFor(fill, existing.length + i);
+    deduped.set(stableKey, fill);
+  }
+
+  return [...deduped.values()].sort((a, b) => getFillTime(a) - getFillTime(b));
+};
 
 type TradingClassificationContext = {
   knownSpotCoins: Set<string>;
@@ -1035,9 +1080,16 @@ export const summarizeTradingFills = (
   };
 };
 
-export const fetchTradingStatsFromApi = async (address: string): Promise<TradingApiResult> => {
+export const fetchTradingStatsFromApi = async (
+  address: string,
+  options: { continueScan?: boolean } = {}
+): Promise<TradingApiResult> => {
   const endTime = Date.now();
   const startTime = 0;
+  cleanupTradingScanCache();
+  const cacheKey = address.toLowerCase();
+  const cachedScan = tradingScanCache.get(cacheKey);
+  const shouldContinueScan = Boolean(options.continueScan && cachedScan && cachedScan.pendingWindows.length > 0);
 
   const [spotMeta, perpMeta, rangeResult] = await Promise.all([
     fetchHyperliquidInfo<SpotMetaResponse>({ type: "spotMeta" }),
@@ -1050,10 +1102,20 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
       pageLimit: 2000,
       minWindowMs: 30 * 60 * 1000,
       maxRequests: 160,
+      initialWindows: shouldContinueScan ? cachedScan?.pendingWindows : undefined,
     }),
   ]);
 
-  let fills = rangeResult.rows;
+  let fills = shouldContinueScan && cachedScan ? mergeFills(cachedScan.rows, rangeResult.rows) : rangeResult.rows;
+  const pendingWindows = rangeResult.pendingWindows;
+  const scanComplete = pendingWindows.length === 0 && !rangeResult.truncated;
+  tradingScanCache.set(cacheKey, {
+    rows: fills,
+    pendingWindows,
+    complete: scanComplete,
+    rateLimited: rangeResult.rateLimited,
+    updatedAt: Date.now(),
+  });
   let usedFallback = false;
   const warnings: string[] = [];
   let outcomeMeta: OutcomeMetaResponse | null = null;
@@ -1082,6 +1144,19 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
 
   if (rangeResult.truncated) {
     warnings.push("The API window was dense and had to be split; some rows may still be truncated by API limits.");
+  }
+  if (rangeResult.rateLimited) {
+    warnings.push(
+      "Hyperliquid rate limit was reached during time-window splitting. Trading stats use the fills recovered before the rate limit; use Full history to compare sources."
+    );
+  }
+  if (pendingWindows.length > 0) {
+    warnings.push(
+      `API deep scan can continue: ${pendingWindows.length} time windows remain. Use Continue API scan to recover more historical fills without restarting from zero.`
+    );
+  }
+  if (shouldContinueScan) {
+    warnings.push("Continued API scan reused previously recovered fills and scanned only remaining time windows.");
   }
   warnings.push("Hyperliquid fills are loaded with time-window splitting and de-duplication; very dense wallets can still hit API rate limits.");
   warnings.push(
@@ -1247,6 +1322,14 @@ export const fetchTradingStatsFromApi = async (address: string): Promise<Trading
       usedFallback,
       truncated: rangeResult.truncated,
       warnings,
+      dataSourceLabel: shouldContinueScan ? "Hyperliquid API (continued scan)" : "Hyperliquid API",
+      apiScan: {
+        complete: scanComplete,
+        canContinue: pendingWindows.length > 0,
+        pendingWindows: pendingWindows.length,
+        cachedFills: fills.length,
+        rateLimited: rangeResult.rateLimited,
+      },
     },
     ...summary,
   };

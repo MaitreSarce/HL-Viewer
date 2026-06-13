@@ -31,6 +31,13 @@ type TradingData = {
     warnings?: string[];
     truncated?: boolean;
     dataSourceLabel?: string;
+    apiScan?: {
+      complete: boolean;
+      canContinue: boolean;
+      pendingWindows: number;
+      cachedFills: number;
+      rateLimited: boolean;
+    };
   };
   charts: {
     outcomes: Record<"day" | "week" | "month" | "year", Array<{ period: string; volume: number; pnl: number }>>;
@@ -345,7 +352,9 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const [activeTab, setActiveTab] = useState<TabKey>("trading");
   const [histGranularity, setHistGranularity] = useState<HistogramGranularity>("day");
   const [loadingApi, setLoadingApi] = useState(false);
+  const [loadingContinueApi, setLoadingContinueApi] = useState(false);
   const [loadingFullExport, setLoadingFullExport] = useState(false);
+  const [apiScanMessage, setApiScanMessage] = useState("");
   const [fullExportMessage, setFullExportMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -360,11 +369,13 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const trimmedAddress = address.trim();
   const sharePath = trimmedAddress ? `/wallet/${encodeURIComponent(trimmedAddress)}` : "";
   const canRequestFullExport = Boolean(trading && address.trim());
+  const canContinueApiScan = Boolean(trading && address.trim() && trading.meta?.apiScan?.canContinue);
 
   const onAnalyzeApi = async (event: FormEvent) => {
     event.preventDefault();
     setLoadingApi(true);
     setError("");
+    setApiScanMessage("");
     setFullExportMessage("");
 
     try {
@@ -425,6 +436,44 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     }
   };
 
+  const onContinueApiScan = async () => {
+    setLoadingContinueApi(true);
+    setError("");
+    setApiScanMessage("Continuing Hyperliquid API scan from the remaining time windows...");
+
+    try {
+      const params = new URLSearchParams({
+        address: address.trim(),
+        continue: "1",
+      });
+      const response = await fetch(`/api/dashboard/trading?${params.toString()}`, {
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
+        },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setApiScanMessage((payload as { error?: string }).error ?? "Continue API scan failed.");
+        return;
+      }
+
+      const nextTrading = payload as TradingData;
+      const previousFills = trading?.totals.fills ?? 0;
+      setTrading(nextTrading);
+      setApiScanMessage(
+        nextTrading.meta?.apiScan?.canContinue
+          ? `API scan continued: ${formatNum(nextTrading.totals.fills)} fills recovered (${formatNum(Math.max(0, nextTrading.totals.fills - previousFills))} new). ${nextTrading.meta.apiScan.pendingWindows} time windows remain.`
+          : `API scan complete: ${formatNum(nextTrading.totals.fills)} fills recovered (${formatNum(Math.max(0, nextTrading.totals.fills - previousFills))} new).`
+      );
+    } catch {
+      setApiScanMessage("Continue API scan failed. Current dashboard data is still displayed.");
+    } finally {
+      setLoadingContinueApi(false);
+    }
+  };
+
   const onFetchFullHistory = async () => {
     setLoadingFullExport(true);
     setError("");
@@ -470,7 +519,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     }
   };
 
-  const isLoading = loadingApi || loadingFullExport;
+  const isLoading = loadingApi || loadingContinueApi || loadingFullExport;
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-8 md:px-8">
@@ -590,6 +639,20 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
                 ) : (
                   <div className="space-y-2">
                     <p>Standard Hyperliquid API is the primary source. HL-Viewer splits requests by time to recover as many fills as possible.</p>
+                    {trading.meta?.apiScan ? (
+                      <p className="text-slate-500">
+                        API scan status: {trading.meta.apiScan.complete ? "complete" : "partial"} · {formatNum(trading.meta.apiScan.cachedFills)} fills cached
+                        {trading.meta.apiScan.canContinue ? ` · ${trading.meta.apiScan.pendingWindows} windows remaining` : ""}
+                      </p>
+                    ) : null}
+                    <button
+                      type="button"
+                      disabled={!canContinueApiScan || loadingContinueApi}
+                      onClick={onContinueApiScan}
+                      className="mr-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-50"
+                    >
+                      {loadingContinueApi ? "Continuing API scan..." : "Continue API scan"}
+                    </button>
                     <p className="text-slate-500">
                       Full history export is limited to one request per wallet/user per UTC day. If the daily quota is reached, the app keeps
                       showing standard API data and explains when to retry.
@@ -607,6 +670,11 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
                     </button>
                   </div>
                 )}
+                {apiScanMessage ? (
+                  <p className={`mt-2 ${apiScanMessage.includes("failed") ? "text-red-700" : "text-emerald-700"}`}>
+                    {apiScanMessage}
+                  </p>
+                ) : null}
                 {fullExportMessage ? (
                   <p className={`mt-2 ${fullExportMessage.includes("limit reached") || fullExportMessage.includes("failed") ? "text-red-700" : "text-sky-700"}`}>
                     {fullExportMessage}

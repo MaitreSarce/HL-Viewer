@@ -6,13 +6,14 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const addressRaw = searchParams.get("address") ?? "";
   const address = normalizeAddress(addressRaw);
+  const continueScan = searchParams.get("continue") === "1";
 
   if (!isEvmAddress(address)) {
     return NextResponse.json({ error: "Invalid EVM wallet address." }, { status: 400 });
   }
 
   try {
-    const result = await fetchTradingStatsFromApi(address);
+    const result = await fetchTradingStatsFromApi(address, { continueScan });
     return NextResponse.json(result, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to load trading stats.";

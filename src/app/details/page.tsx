@@ -49,6 +49,8 @@ export default function DetailsPage() {
           Source: `userFillsByTime` from timestamp 0 to now, with window splitting and de-duplication, plus `spotMeta`, `meta`, and
           `outcomeMeta` for market-type classification. If empty, fallback to `userFills`. Dense wallets can require many time-window
           requests, so the app retries Hyperliquid rate limits and marks the result as truncated only if splitting cannot finish.
+          When splitting stops because of a rate limit or request budget, HL-Viewer stores recovered fills and remaining time windows
+          in server memory; `Continue API scan` resumes those remaining windows instead of restarting from zero.
         </p>
         <p>
           The dashboard can also request a full history export from the Hypedexer/Enigma

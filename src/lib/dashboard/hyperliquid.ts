@@ -175,7 +175,7 @@ export const buildSpotCoinResolver = (spotMeta: SpotMetaResponse) => {
   };
 };
 
-type TimeWindow = {
+export type TimeWindow = {
   startTime: number;
   endTime: number;
 };
@@ -206,6 +206,8 @@ export type RangeFetchResult<T> = {
   rows: T[];
   requestsUsed: number;
   truncated: boolean;
+  rateLimited: boolean;
+  pendingWindows: TimeWindow[];
 };
 
 type SplitFetchOptions = {
@@ -217,6 +219,7 @@ type SplitFetchOptions = {
   minWindowMs?: number;
   maxRequests?: number;
   extraBody?: Record<string, unknown>;
+  initialWindows?: TimeWindow[];
 };
 
 export const fetchTimeRangeWithSplit = async <T extends TimeScopedRow>(
@@ -231,16 +234,20 @@ export const fetchTimeRangeWithSplit = async <T extends TimeScopedRow>(
     minWindowMs = 60 * 1000,
     maxRequests = 140,
     extraBody = {},
+    initialWindows,
   } = options;
 
-  const queue: TimeWindow[] = [{ startTime, endTime }];
+  const queue: TimeWindow[] = initialWindows && initialWindows.length > 0 ? [...initialWindows] : [{ startTime, endTime }];
   const buffered: T[] = [];
   let requestsUsed = 0;
   let truncated = false;
+  let rateLimited = false;
+  let pendingWindows: TimeWindow[] = [];
 
   while (queue.length > 0) {
     if (requestsUsed >= maxRequests) {
       truncated = true;
+      pendingWindows = [...queue];
       break;
     }
 
@@ -248,14 +255,29 @@ export const fetchTimeRangeWithSplit = async <T extends TimeScopedRow>(
     if (!current) break;
     if (current.startTime > current.endTime) continue;
 
-    const payload = await fetchHyperliquidInfo<unknown>({
-      type,
-      user,
-      startTime: current.startTime,
-      endTime: current.endTime,
-      ...extraBody,
-    });
-    requestsUsed += 1;
+    let payload: unknown;
+    try {
+      payload = await fetchHyperliquidInfo<unknown>({
+        type,
+        user,
+        startTime: current.startTime,
+        endTime: current.endTime,
+        ...extraBody,
+      });
+      requestsUsed += 1;
+    } catch (error) {
+      if (
+        error instanceof RemoteApiError &&
+        error.status === 429 &&
+        (buffered.length > 0 || (initialWindows && initialWindows.length > 0))
+      ) {
+        rateLimited = true;
+        truncated = true;
+        pendingWindows = [current, ...queue];
+        break;
+      }
+      throw error;
+    }
 
     if (!Array.isArray(payload)) {
       throw new Error(`Unexpected payload for ${type}`);
@@ -293,7 +315,7 @@ export const fetchTimeRangeWithSplit = async <T extends TimeScopedRow>(
 
   const rows = [...deduped.values()].sort((a, b) => rowTime(a) - rowTime(b));
 
-  return { rows, requestsUsed, truncated };
+  return { rows, requestsUsed, truncated, rateLimited, pendingWindows };
 };
 
 export const getFillCoinRaw = (fill: HyperliquidFill): string => {
