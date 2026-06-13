@@ -393,6 +393,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const autoScanBlockedRef = useRef(false);
   const autoContinueRequestedRef = useRef(false);
   const autoContinueInFlightRef = useRef(false);
+  const autoContinueRetryCountRef = useRef(0);
 
   const setActiveApiScanId = useCallback((nextScanId: string) => {
     apiScanIdRef.current = nextScanId;
@@ -497,6 +498,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     setHevm(null);
     setUnitBridge(null);
     autoContinueRequestedRef.current = enableAutoContinue;
+    autoContinueRetryCountRef.current = 0;
     setAutoScanCompleteState(false);
     setAutoScanBlockedState(false);
     setAutoContinueKick(0);
@@ -624,17 +626,18 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       if (!response.ok) {
         const errorMessage = (payload as { error?: string }).error ?? "Continue API scan failed.";
         if (errorMessage.includes("continuation state is unavailable") || errorMessage.includes("already complete")) {
-          if (options?.automatic && autoContinueRequestedRef.current && trading?.meta?.apiScan?.canContinue) {
-            setApiScanMessage(`${errorMessage} Auto scan will retry in a few seconds.`);
-            setAutoContinueKick((value) => value + 1);
-            return;
-          }
           setAutoScanBlockedState(true);
           setApiScanMessage(`${errorMessage} Auto scan paused to avoid restarting from zero.`);
           return;
         }
         if (options?.automatic && autoContinueRequestedRef.current && trading?.meta?.apiScan?.canContinue) {
-          setApiScanMessage(`${errorMessage} Auto scan will retry in a few seconds.`);
+          autoContinueRetryCountRef.current += 1;
+          if (autoContinueRetryCountRef.current >= 3) {
+            setAutoScanBlockedState(true);
+            setApiScanMessage(`${errorMessage} Auto scan paused after 3 temporary retries.`);
+            return;
+          }
+          setApiScanMessage(`${errorMessage} Auto scan will retry in a few seconds (${autoContinueRetryCountRef.current}/3).`);
           return;
         }
         setAutoScanBlockedState(true);
@@ -646,8 +649,16 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       const previousFills = trading?.totals.fills ?? 0;
       if (nextTrading.totals.fills < previousFills) {
         if (options?.automatic && autoContinueRequestedRef.current && trading?.meta?.apiScan?.canContinue) {
+          autoContinueRetryCountRef.current += 1;
+          if (autoContinueRetryCountRef.current >= 3) {
+            setAutoScanBlockedState(true);
+            setApiScanMessage(
+              `Auto scan paused after 3 temporary retries because continuations kept returning fewer fills than the current dashboard. Current results were kept.`
+            );
+            return;
+          }
           setApiScanMessage(
-            `Temporary continuation returned fewer fills (${formatNum(nextTrading.totals.fills)}) than the current dashboard (${formatNum(previousFills)}). Current results were kept and auto scan will retry in a few seconds.`
+            `Temporary continuation returned fewer fills (${formatNum(nextTrading.totals.fills)}) than the current dashboard (${formatNum(previousFills)}). Current results were kept and auto scan will retry in a few seconds (${autoContinueRetryCountRef.current}/3).`
           );
           return;
         }
@@ -658,6 +669,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
         return;
       }
       setTrading(nextTrading);
+      autoContinueRetryCountRef.current = 0;
       if (nextTrading.meta?.apiScan?.canContinue) {
         setAutoScanBlockedState(false);
         setAutoContinueKick((value) => value + 1);
@@ -689,11 +701,19 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
         );
       }
     } catch {
-      setApiScanMessage(
-        options?.automatic
-          ? "Continue API scan failed. Current dashboard data is still displayed and auto scan will retry in a few seconds."
-          : "Continue API scan failed. Current dashboard data is still displayed."
-      );
+      if (options?.automatic) {
+        autoContinueRetryCountRef.current += 1;
+        if (autoContinueRetryCountRef.current >= 3) {
+          setAutoScanBlockedState(true);
+          setApiScanMessage("Continue API scan failed. Auto scan paused after 3 temporary retries.");
+        } else {
+          setApiScanMessage(
+            `Continue API scan failed. Current dashboard data is still displayed and auto scan will retry in a few seconds (${autoContinueRetryCountRef.current}/3).`
+          );
+        }
+      } else {
+        setApiScanMessage("Continue API scan failed. Current dashboard data is still displayed.");
+      }
     } finally {
       autoContinueInFlightRef.current = false;
       setLoadingContinueApi(false);
