@@ -394,6 +394,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const autoContinueRequestedRef = useRef(false);
   const autoContinueInFlightRef = useRef(false);
   const autoContinueRetryCountRef = useRef(0);
+  const autoContinueSessionRetryCountRef = useRef(0);
 
   const setActiveApiScanId = useCallback((nextScanId: string) => {
     apiScanIdRef.current = nextScanId;
@@ -499,6 +500,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     setUnitBridge(null);
     autoContinueRequestedRef.current = enableAutoContinue;
     autoContinueRetryCountRef.current = 0;
+    autoContinueSessionRetryCountRef.current = 0;
     setAutoScanCompleteState(false);
     setAutoScanBlockedState(false);
     setAutoContinueKick(0);
@@ -625,7 +627,27 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         const errorMessage = (payload as { error?: string }).error ?? "Continue API scan failed.";
-        if (errorMessage.includes("continuation state is unavailable") || errorMessage.includes("already complete")) {
+        if (errorMessage.includes("already complete")) {
+          setAutoContinueApi(false);
+          autoContinueRequestedRef.current = false;
+          setAutoScanCompleteState(true);
+          setApiScanMessage("Auto scan complete. No remaining time windows to continue.");
+          return;
+        }
+        if (errorMessage.includes("continuation state is unavailable")) {
+          if (options?.automatic && autoContinueRequestedRef.current && trading?.meta?.apiScan?.canContinue) {
+            autoContinueSessionRetryCountRef.current += 1;
+            if (autoContinueSessionRetryCountRef.current >= 20) {
+              setAutoScanBlockedState(true);
+              setApiScanMessage(`${errorMessage} Auto scan paused after 20 session retries.`);
+              return;
+            }
+            setApiScanMessage(
+              `${errorMessage} Auto scan is waiting for the scan session and will retry (${autoContinueSessionRetryCountRef.current}/20).`
+            );
+            setAutoContinueKick((value) => value + 1);
+            return;
+          }
           setAutoScanBlockedState(true);
           setApiScanMessage(`${errorMessage} Auto scan paused to avoid restarting from zero.`);
           return;
@@ -670,6 +692,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       }
       setTrading(nextTrading);
       autoContinueRetryCountRef.current = 0;
+      autoContinueSessionRetryCountRef.current = 0;
       if (nextTrading.meta?.apiScan?.canContinue) {
         setAutoScanBlockedState(false);
         setAutoContinueKick((value) => value + 1);
@@ -743,7 +766,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     const timer = window.setTimeout(() => {
       if (!autoContinueRequestedRef.current || autoContinueInFlightRef.current) return;
       void onContinueApiScan({ automatic: true });
-    }, 2_000);
+    }, 5_000);
     return () => window.clearTimeout(timer);
   }, [autoContinueApi, autoContinueKick, autoScanBlocked, autoScanComplete, canContinueApiScan, onContinueApiScan]);
 
