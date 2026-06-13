@@ -383,8 +383,10 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const [apiScanElapsedMs, setApiScanElapsedMs] = useState(0);
   const [autoContinueApi, setAutoContinueApi] = useState(false);
   const [autoScanComplete, setAutoScanComplete] = useState(false);
+  const [autoScanBlocked, setAutoScanBlocked] = useState(false);
   const apiScanIdRef = useRef(createApiScanId());
   const autoScanCompleteRef = useRef(false);
+  const autoScanBlockedRef = useRef(false);
 
   const setActiveApiScanId = useCallback((nextScanId: string) => {
     apiScanIdRef.current = nextScanId;
@@ -393,6 +395,11 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const setAutoScanCompleteState = useCallback((complete: boolean) => {
     autoScanCompleteRef.current = complete;
     setAutoScanComplete(complete);
+  }, []);
+
+  const setAutoScanBlockedState = useCallback((blocked: boolean) => {
+    autoScanBlockedRef.current = blocked;
+    setAutoScanBlocked(blocked);
   }, []);
 
   const [trading, setTrading] = useState<TradingData | null>(null);
@@ -420,8 +427,9 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
   const displayedPendingWindows = apiScanProgress?.pendingWindows ?? trading?.meta?.apiScan?.pendingWindows ?? 0;
   const displayedRequestsUsed = apiScanProgress?.requestsUsed ?? 0;
   const scanIsActive = loadingApi || loadingContinueApi || Boolean(apiScanProgress?.inProgress);
+  const autoScanWaitingForNextRun = autoContinueApi && canContinueApiScan && !autoScanComplete && !autoScanBlocked;
   const tabStates: Record<TabKey, { loading: boolean; loaded: boolean }> = {
-    trading: { loading: loadingApi || loadingContinueApi, loaded: Boolean(trading) },
+    trading: { loading: loadingApi || loadingContinueApi || autoScanWaitingForNextRun, loaded: Boolean(trading) && !autoScanWaitingForNextRun },
     hevm: { loading: loadingApi, loaded: Boolean(hevm) },
     unit: { loading: loadingApi, loaded: Boolean(unitBridge) },
   };
@@ -477,6 +485,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     setApiScanMessage("");
     setApiScanProgress(null);
     setAutoScanCompleteState(false);
+    setAutoScanBlockedState(false);
     setAutoContinueApi(enableAutoContinue);
     const nextScanId = createApiScanId();
     setActiveApiScanId(nextScanId);
@@ -517,6 +526,9 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       if (tradingRes.ok) {
         setTrading(tradingRes.payload as TradingData);
       } else {
+        setAutoContinueApi(false);
+        setAutoScanBlockedState(true);
+        setApiScanMessage("Auto scan paused because Hyperliquid trading stats returned an error. You can retry manually with Continue API scan.");
         const message = (tradingRes.payload as { error?: string }).error ?? "Trading API failed.";
         failures.push(`Hyperliquid trading stats failed: ${message}. HEVM and Unit Bridge sections may still be available.`);
       }
@@ -554,8 +566,9 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     await runAnalyzeApi(true);
   };
 
-  const onContinueApiScan = useCallback(async () => {
+  const onContinueApiScan = useCallback(async (options?: { automatic?: boolean }) => {
     if (autoScanCompleteRef.current) return;
+    if (options?.automatic && autoScanBlockedRef.current) return;
     setLoadingContinueApi(true);
     setError("");
     setApiScanMessage("Continuing Hyperliquid API scan from the remaining time windows...");
@@ -579,14 +592,25 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
+        setAutoContinueApi(false);
+        setAutoScanBlockedState(true);
         setApiScanMessage((payload as { error?: string }).error ?? "Continue API scan failed.");
         return;
       }
 
       const nextTrading = payload as TradingData;
       const previousFills = trading?.totals.fills ?? 0;
+      if (nextTrading.totals.fills < previousFills) {
+        setAutoContinueApi(false);
+        setAutoScanBlockedState(true);
+        setApiScanMessage(
+          `Auto scan paused because the continuation returned fewer fills (${formatNum(nextTrading.totals.fills)}) than the current dashboard (${formatNum(previousFills)}). Current results were kept.`
+        );
+        return;
+      }
       setTrading(nextTrading);
       if (nextTrading.meta?.apiScan?.canContinue) {
+        setAutoScanBlockedState(false);
         setApiScanMessage(
           `API scan continued: ${formatNum(nextTrading.totals.fills)} fills recovered (${formatNum(Math.max(0, nextTrading.totals.fills - previousFills))} new). ${nextTrading.meta.apiScan.pendingWindows} time windows remain.`
         );
@@ -615,15 +639,15 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
       setApiScanElapsedMs(Date.now() - startedAt);
       void refreshApiScanProgress(currentScanId);
     }
-  }, [address, refreshApiScanProgress, setAutoScanCompleteState, trading?.totals.fills]);
+  }, [address, refreshApiScanProgress, setAutoScanBlockedState, setAutoScanCompleteState, trading?.totals.fills]);
 
   useEffect(() => {
-    if (autoScanComplete || !autoContinueApi || !canContinueApiScan) return;
+    if (autoScanComplete || autoScanBlocked || !autoContinueApi || !canContinueApiScan) return;
     const timer = window.setTimeout(() => {
-      void onContinueApiScan();
-    }, 4_000);
+      void onContinueApiScan({ automatic: true });
+    }, 2_000);
     return () => window.clearTimeout(timer);
-  }, [autoContinueApi, autoScanComplete, canContinueApiScan, onContinueApiScan]);
+  }, [autoContinueApi, autoScanBlocked, autoScanComplete, canContinueApiScan, onContinueApiScan]);
 
   const isLoading = loadingApi || loadingContinueApi;
 
@@ -707,7 +731,7 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
               <button
                 type="button"
                 disabled={!canContinueApiScan}
-                onClick={onContinueApiScan}
+                onClick={() => void onContinueApiScan()}
                 className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-50"
               >
                 {loadingContinueApi ? "Continuing API scan..." : "Continue API scan"}

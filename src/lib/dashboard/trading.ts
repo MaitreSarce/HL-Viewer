@@ -125,6 +125,52 @@ type TradingScanCache = {
 
 const TRADING_SCAN_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const tradingScanCache = new Map<string, TradingScanCache>();
+const META_CACHE_TTL_MS = 30 * 60 * 1000;
+
+type TimedCache<T> = {
+  value: T;
+  updatedAt: number;
+};
+
+let spotMetaCache: TimedCache<SpotMetaResponse> | null = null;
+let perpMetaCache: TimedCache<PerpMetaResponse> | null = null;
+let outcomeMetaCache: TimedCache<OutcomeMetaResponse> | null = null;
+
+const fetchCachedSpotMeta = async () => {
+  if (spotMetaCache && Date.now() - spotMetaCache.updatedAt < META_CACHE_TTL_MS) return spotMetaCache.value;
+  try {
+    const value = await fetchHyperliquidInfo<SpotMetaResponse>({ type: "spotMeta" });
+    spotMetaCache = { value, updatedAt: Date.now() };
+    return value;
+  } catch (error) {
+    if (spotMetaCache) return spotMetaCache.value;
+    throw error;
+  }
+};
+
+const fetchCachedPerpMeta = async () => {
+  if (perpMetaCache && Date.now() - perpMetaCache.updatedAt < META_CACHE_TTL_MS) return perpMetaCache.value;
+  try {
+    const value = await fetchHyperliquidInfo<PerpMetaResponse>({ type: "meta" });
+    perpMetaCache = { value, updatedAt: Date.now() };
+    return value;
+  } catch (error) {
+    if (perpMetaCache) return perpMetaCache.value;
+    throw error;
+  }
+};
+
+const fetchCachedOutcomeMeta = async () => {
+  if (outcomeMetaCache && Date.now() - outcomeMetaCache.updatedAt < META_CACHE_TTL_MS) return outcomeMetaCache.value;
+  try {
+    const value = await fetchHyperliquidInfo<OutcomeMetaResponse>({ type: "outcomeMeta" });
+    outcomeMetaCache = { value, updatedAt: Date.now() };
+    return value;
+  } catch (error) {
+    if (outcomeMetaCache) return outcomeMetaCache.value;
+    throw error;
+  }
+};
 
 const cleanupTradingScanCache = () => {
   const now = Date.now();
@@ -1123,6 +1169,12 @@ export const fetchTradingStatsFromApi = async (
   cleanupTradingScanCache();
   const cacheKey = tradingScanCacheKey(address, options.scanId);
   const cachedScan = tradingScanCache.get(cacheKey);
+  if (options.continueScan && !cachedScan) {
+    throw new Error("API scan continuation state is unavailable. Keep the current results and retry Continue API scan.");
+  }
+  if (options.continueScan && cachedScan && cachedScan.pendingWindows.length === 0) {
+    throw new Error("API scan is already complete. No remaining time windows to continue.");
+  }
   const shouldContinueScan = Boolean(options.continueScan && cachedScan && cachedScan.pendingWindows.length > 0);
   const progressBaseRows = shouldContinueScan && cachedScan ? cachedScan.rows : [];
   tradingScanCache.set(cacheKey, {
@@ -1134,33 +1186,42 @@ export const fetchTradingStatsFromApi = async (
     requestsUsed: 0,
     updatedAt: Date.now(),
   });
+  const warnings: string[] = [];
 
-  const [spotMeta, perpMeta, rangeResult] = await Promise.all([
-    fetchHyperliquidInfo<SpotMetaResponse>({ type: "spotMeta" }),
-    fetchHyperliquidInfo<PerpMetaResponse>({ type: "meta" }),
-    fetchTimeRangeWithSplit<HyperliquidFill>({
-      type: "userFillsByTime",
-      user: address,
-      startTime,
-      endTime,
-      pageLimit: 2000,
-      minWindowMs: 30 * 60 * 1000,
-      maxRequests: 160,
-      initialWindows: shouldContinueScan ? cachedScan?.pendingWindows : undefined,
-      onProgress: (progress) => {
-        const rows = progressBaseRows.length > 0 ? mergeFills(progressBaseRows, progress.rows) : mergeFills([], progress.rows);
-        tradingScanCache.set(cacheKey, {
-          rows,
-          pendingWindows: progress.pendingWindows,
-          complete: progress.pendingWindows.length === 0 && !progress.truncated,
-          rateLimited: progress.rateLimited,
-          inProgress: true,
-          requestsUsed: progress.requestsUsed,
-          updatedAt: Date.now(),
-        });
-      },
-    }),
-  ]);
+  const rangeResult = await fetchTimeRangeWithSplit<HyperliquidFill>({
+    type: "userFillsByTime",
+    user: address,
+    startTime,
+    endTime,
+    pageLimit: 2000,
+    minWindowMs: 30 * 60 * 1000,
+    maxRequests: 160,
+    initialWindows: shouldContinueScan ? cachedScan?.pendingWindows : undefined,
+    onProgress: (progress) => {
+      const rows = progressBaseRows.length > 0 ? mergeFills(progressBaseRows, progress.rows) : mergeFills([], progress.rows);
+      tradingScanCache.set(cacheKey, {
+        rows,
+        pendingWindows: progress.pendingWindows,
+        complete: progress.pendingWindows.length === 0 && !progress.truncated,
+        rateLimited: progress.rateLimited,
+        inProgress: true,
+        requestsUsed: progress.requestsUsed,
+        updatedAt: Date.now(),
+      });
+    },
+  });
+  let spotMeta: SpotMetaResponse = {};
+  let perpMeta: PerpMetaResponse = {};
+  try {
+    spotMeta = await fetchCachedSpotMeta();
+  } catch {
+    warnings.push("Could not load spot metadata because Hyperliquid rate-limited the metadata request. Spot/Unit classification may be partial for this run.");
+  }
+  try {
+    perpMeta = await fetchCachedPerpMeta();
+  } catch {
+    warnings.push("Could not load perp metadata because Hyperliquid rate-limited the metadata request. Perps classification may be partial for this run.");
+  }
 
   let fills = shouldContinueScan && cachedScan ? mergeFills(cachedScan.rows, rangeResult.rows) : mergeFills([], rangeResult.rows);
   const pendingWindows = rangeResult.pendingWindows;
@@ -1175,12 +1236,11 @@ export const fetchTradingStatsFromApi = async (
     updatedAt: Date.now(),
   });
   let usedFallback = false;
-  const warnings: string[] = [];
   let outcomeMeta: OutcomeMetaResponse | null = null;
   let outcomeMetaRequestUsed = 0;
 
   try {
-    outcomeMeta = await fetchHyperliquidInfo<OutcomeMetaResponse>({ type: "outcomeMeta" });
+    outcomeMeta = await fetchCachedOutcomeMeta();
     outcomeMetaRequestUsed = 1;
   } catch {
     warnings.push(
