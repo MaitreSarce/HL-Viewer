@@ -19,7 +19,7 @@ import { normalizeAddress } from "@/lib/dashboard/shared";
 
 const HYPEDEXER_API_BASE = "https://api.hypedexer.com";
 const HYPEDEXER_ORIGIN = "https://trade-export.hypedexer.com";
-const FULL_EXPORT_START_DATE = "2024-11-09";
+const FULL_EXPORT_START_DATE = "2023-01-01";
 const POLL_INTERVAL_MS = 3_000;
 const MAX_WAIT_MS = 230_000;
 
@@ -237,6 +237,7 @@ export const fetchTradingStatsFromFullExport = async (
   const warnings: string[] = [
     "Data source: Hypedexer/Enigma full history export (.csv.gz).",
     "Full export is intended for wallets that exceed the standard Hyperliquid 10,000 fills API window.",
+    `Full export is requested from ${FULL_EXPORT_START_DATE} to tomorrow UTC to cover early Hyperliquid trading history.`,
     "Full export quota is limited to one request per wallet/user per UTC day in HL-Viewer.",
   ];
 

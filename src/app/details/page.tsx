@@ -52,9 +52,10 @@ export default function DetailsPage() {
         </p>
         <p>
           If the wallet is likely above that API window, the dashboard can request a full history export from the Hypedexer/Enigma
-          exporter referenced by Hyperliquid docs. The export is a `.csv.gz` file with `time, coin, dir, px, sz, ntl, fee, feeToken,
-          closedPnl, hash`, then the same classification and metric engine is reused. HL-Viewer limits this full export to one request
-          per wallet/user per UTC day and shows a quota message if the daily export is already used.
+          exporter referenced by Hyperliquid docs. HL-Viewer requests this export from `2023-01-01` to tomorrow UTC. The export is a
+          `.csv.gz` file with `time, coin, dir, px, sz, ntl, fee, feeToken, closedPnl, hash`, then the same classification and metric
+          engine is reused. HL-Viewer limits this full export to one request per wallet/user per UTC day and shows a quota message if
+          the daily export is already used.
         </p>
         <p>Base formulas per fill:</p>
         <p>- Volume = `abs(px * sz)`</p>
