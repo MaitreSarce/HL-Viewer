@@ -21,3 +21,23 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }
+
+export async function POST(request: NextRequest) {
+  const body = await request.json().catch(() => ({}));
+  const address = normalizeAddress(typeof body.address === "string" ? body.address : "");
+  const continueScan = Boolean(body.continueScan);
+  const scanId = typeof body.scanId === "string" ? body.scanId : undefined;
+  const fallbackWindows = Array.isArray(body.pendingWindows) ? body.pendingWindows : undefined;
+
+  if (!isEvmAddress(address)) {
+    return NextResponse.json({ error: "Invalid EVM wallet address." }, { status: 400 });
+  }
+
+  try {
+    const result = await fetchTradingStatsFromApi(address, { continueScan, scanId, fallbackWindows });
+    return NextResponse.json(result, { status: 200 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to load trading stats.";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
+}

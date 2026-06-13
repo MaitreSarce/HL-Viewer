@@ -7,9 +7,9 @@ type TradingData = {
   source: "api" | "full_export";
   totals: {
     fills: number;
-    outcomes: { volume: number; pnl: number; feesPaid: number };
-    xyz: { volume: number; pnl: number; feesPaid: number };
-    perps: { volume: number; pnl: number; feesPaid: number };
+    outcomes: { volume: number; pnl: number; feesPaid: number; wins?: number; losses?: number; trades?: number };
+    xyz: { volume: number; pnl: number; feesPaid: number; wins?: number; losses?: number; trades?: number };
+    perps: { volume: number; pnl: number; feesPaid: number; wins?: number; losses?: number; trades?: number };
     spotVolume: number;
     spotFeesPaid: number;
     spotTwab: number | null;
@@ -35,8 +35,10 @@ type TradingData = {
       complete: boolean;
       canContinue: boolean;
       pendingWindows: number;
+      pendingWindowsDetail?: Array<{ startTime: number; endTime: number }>;
       cachedFills: number;
       rateLimited: boolean;
+      statelessDelta?: boolean;
     };
   };
   charts: {
@@ -97,6 +99,7 @@ type ApiScanProgress = {
   exists: boolean;
   fills: number;
   pendingWindows: number;
+  pendingWindowsDetail?: Array<{ startTime: number; endTime: number }>;
   complete: boolean;
   canContinue: boolean;
   rateLimited: boolean;
@@ -370,6 +373,112 @@ const HistogramCard = ({
     </article>
   );
 };
+
+const mergeBucket = <T extends { volume: number; pnl: number; feesPaid: number; wins?: number; losses?: number; trades?: number }>(
+  base: T,
+  delta: T
+): T => ({
+  ...base,
+  volume: base.volume + delta.volume,
+  pnl: base.pnl + delta.pnl,
+  feesPaid: base.feesPaid + delta.feesPaid,
+  wins: (base.wins ?? 0) + (delta.wins ?? 0),
+  losses: (base.losses ?? 0) + (delta.losses ?? 0),
+  trades: (base.trades ?? 0) + (delta.trades ?? 0),
+});
+
+const mergeVolumeRows = (
+  base: Array<{ period: string; volume: number }>,
+  delta: Array<{ period: string; volume: number }>
+) => {
+  const byPeriod = new Map<string, { period: string; volume: number }>();
+  for (const row of base) byPeriod.set(row.period, { ...row });
+  for (const row of delta) {
+    const current = byPeriod.get(row.period) ?? { period: row.period, volume: 0 };
+    current.volume += row.volume;
+    byPeriod.set(row.period, current);
+  }
+  return [...byPeriod.values()].sort((a, b) => a.period.localeCompare(b.period));
+};
+
+const mergeVolumePnlRows = (
+  base: Array<{ period: string; volume: number; pnl: number }>,
+  delta: Array<{ period: string; volume: number; pnl: number }>
+) => {
+  const byPeriod = new Map<string, { period: string; volume: number; pnl: number }>();
+  for (const row of base) byPeriod.set(row.period, { ...row });
+  for (const row of delta) {
+    const current = byPeriod.get(row.period) ?? { period: row.period, volume: 0, pnl: 0 };
+    current.volume += row.volume;
+    current.pnl += row.pnl;
+    byPeriod.set(row.period, current);
+  }
+  return [...byPeriod.values()].sort((a, b) => a.period.localeCompare(b.period));
+};
+
+const mergeTradingData = (base: TradingData, delta: TradingData): TradingData => {
+  const outcomes = mergeBucket(base.totals.outcomes, delta.totals.outcomes);
+  const xyz = mergeBucket(base.totals.xyz, delta.totals.xyz);
+  const perps = mergeBucket(base.totals.perps, delta.totals.perps);
+  const winrate = (bucket: { wins?: number; losses?: number }) => {
+    const closed = (bucket.wins ?? 0) + (bucket.losses ?? 0);
+    return closed > 0 ? ((bucket.wins ?? 0) / closed) * 100 : 0;
+  };
+  const mergeByGranularity = <T extends "outcomes" | "xyz" | "perps">(key: T) => ({
+    day: mergeVolumePnlRows(base.charts[key].day, delta.charts[key].day),
+    week: mergeVolumePnlRows(base.charts[key].week, delta.charts[key].week),
+    month: mergeVolumePnlRows(base.charts[key].month, delta.charts[key].month),
+    year: mergeVolumePnlRows(base.charts[key].year, delta.charts[key].year),
+  });
+  const mergeVolumeGranularity = <T extends "spot" | "unit">(key: T) => ({
+    day: mergeVolumeRows(base.charts[key].day, delta.charts[key].day),
+    week: mergeVolumeRows(base.charts[key].week, delta.charts[key].week),
+    month: mergeVolumeRows(base.charts[key].month, delta.charts[key].month),
+    year: mergeVolumeRows(base.charts[key].year, delta.charts[key].year),
+  });
+
+  return {
+    ...base,
+    meta: {
+      ...delta.meta,
+      warnings: [...(base.meta?.warnings ?? []), ...(delta.meta?.warnings ?? [])],
+      apiScan: delta.meta?.apiScan
+        ? {
+            ...delta.meta.apiScan,
+            cachedFills: base.totals.fills + delta.totals.fills,
+            statelessDelta: false,
+          }
+        : base.meta?.apiScan,
+    },
+    totals: {
+      ...base.totals,
+      fills: base.totals.fills + delta.totals.fills,
+      outcomes,
+      xyz,
+      perps,
+      spotVolume: base.totals.spotVolume + delta.totals.spotVolume,
+      spotFeesPaid: base.totals.spotFeesPaid + delta.totals.spotFeesPaid,
+      unitVolume: base.totals.unitVolume + delta.totals.unitVolume,
+      unitFeesPaid: base.totals.unitFeesPaid + delta.totals.unitFeesPaid,
+      unitTrades: base.totals.unitTrades + delta.totals.unitTrades,
+      unitTokens: [...new Set([...base.totals.unitTokens, ...delta.totals.unitTokens])].sort(),
+      totalVolume: base.totals.totalVolume + delta.totals.totalVolume,
+    },
+    winrates: {
+      outcomes: winrate(outcomes),
+      xyz: winrate(xyz),
+      perps: winrate(perps),
+    },
+    charts: {
+      outcomes: mergeByGranularity("outcomes"),
+      xyz: mergeByGranularity("xyz"),
+      perps: mergeByGranularity("perps"),
+      spot: mergeVolumeGranularity("spot"),
+      unit: mergeVolumeGranularity("unit"),
+      spotTwab: base.charts.spotTwab,
+    },
+  };
+};
 export default function Home({ initialAddress = "" }: { initialAddress?: string }) {
   const [address, setAddress] = useState(initialAddress);
   const [activeTab, setActiveTab] = useState<TabKey>("trading");
@@ -612,17 +721,20 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     setApiScanElapsedMs(0);
 
     try {
-      const params = new URLSearchParams({
-        address: address.trim(),
-        continue: "1",
-        scanId: currentScanId,
-      });
-      const response = await fetch(`/api/dashboard/trading?${params.toString()}`, {
+      const response = await fetch("/api/dashboard/trading", {
+        method: "POST",
         cache: "no-store",
         headers: {
+          "Content-Type": "application/json",
           "Cache-Control": "no-cache",
           Pragma: "no-cache",
         },
+        body: JSON.stringify({
+          address: address.trim(),
+          continueScan: true,
+          scanId: currentScanId,
+          pendingWindows: trading?.meta?.apiScan?.pendingWindowsDetail ?? apiScanProgress?.pendingWindowsDetail ?? [],
+        }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -667,7 +779,9 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
         return;
       }
 
-      const nextTrading = payload as TradingData;
+      const responseTrading = payload as TradingData;
+      const nextTrading =
+        responseTrading.meta?.apiScan?.statelessDelta && trading ? mergeTradingData(trading, responseTrading) : responseTrading;
       const previousFills = trading?.totals.fills ?? 0;
       if (nextTrading.totals.fills < previousFills) {
         if (options?.automatic && autoContinueRequestedRef.current && trading?.meta?.apiScan?.canContinue) {
@@ -745,11 +859,11 @@ export default function Home({ initialAddress = "" }: { initialAddress?: string 
     }
   }, [
     address,
+    apiScanProgress?.pendingWindowsDetail,
     refreshApiScanProgress,
     setAutoScanBlockedState,
     setAutoScanCompleteState,
-    trading?.meta?.apiScan?.canContinue,
-    trading?.totals.fills,
+    trading,
   ]);
 
   useEffect(() => {

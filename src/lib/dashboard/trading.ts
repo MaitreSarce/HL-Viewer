@@ -70,8 +70,10 @@ export type TradingApiResult = TradingSummary & {
       complete: boolean;
       canContinue: boolean;
       pendingWindows: number;
+      pendingWindowsDetail?: TimeWindow[];
       cachedFills: number;
       rateLimited: boolean;
+      statelessDelta?: boolean;
     };
   };
 };
@@ -208,6 +210,7 @@ export const getTradingScanProgress = (address: string, scanId?: string) => {
       exists: false,
       fills: 0,
       pendingWindows: 0,
+      pendingWindowsDetail: [] as TimeWindow[],
       complete: false,
       canContinue: false,
       rateLimited: false,
@@ -221,6 +224,7 @@ export const getTradingScanProgress = (address: string, scanId?: string) => {
     exists: true,
     fills: cached.rows.length,
     pendingWindows: cached.pendingWindows.length,
+    pendingWindowsDetail: cached.pendingWindows,
     complete: cached.complete,
     canContinue: cached.pendingWindows.length > 0,
     rateLimited: cached.rateLimited,
@@ -1162,24 +1166,29 @@ export const summarizeTradingFills = (
 
 export const fetchTradingStatsFromApi = async (
   address: string,
-  options: { continueScan?: boolean; scanId?: string } = {}
+  options: { continueScan?: boolean; scanId?: string; fallbackWindows?: TimeWindow[] } = {}
 ): Promise<TradingApiResult> => {
   const endTime = Date.now();
   const startTime = 0;
   cleanupTradingScanCache();
   const cacheKey = tradingScanCacheKey(address, options.scanId);
   const cachedScan = tradingScanCache.get(cacheKey);
-  if (options.continueScan && !cachedScan) {
+  const fallbackWindows = (options.fallbackWindows ?? []).filter((window) =>
+    Number.isFinite(window.startTime) && Number.isFinite(window.endTime) && window.startTime <= window.endTime
+  );
+  const usingStatelessContinuation = Boolean(options.continueScan && !cachedScan && fallbackWindows.length > 0);
+  if (options.continueScan && !cachedScan && !usingStatelessContinuation) {
     throw new Error("API scan continuation state is unavailable. Keep the current results and retry Continue API scan.");
   }
   if (options.continueScan && cachedScan && cachedScan.pendingWindows.length === 0) {
     throw new Error("API scan is already complete. No remaining time windows to continue.");
   }
-  const shouldContinueScan = Boolean(options.continueScan && cachedScan && cachedScan.pendingWindows.length > 0);
+  const shouldContinueScan = Boolean(options.continueScan && ((cachedScan && cachedScan.pendingWindows.length > 0) || usingStatelessContinuation));
   const progressBaseRows = shouldContinueScan && cachedScan ? cachedScan.rows : [];
+  const scanWindows = shouldContinueScan && cachedScan ? cachedScan.pendingWindows : usingStatelessContinuation ? fallbackWindows : [{ startTime, endTime }];
   tradingScanCache.set(cacheKey, {
     rows: progressBaseRows,
-    pendingWindows: shouldContinueScan && cachedScan ? cachedScan.pendingWindows : [{ startTime, endTime }],
+    pendingWindows: scanWindows,
     complete: false,
     rateLimited: false,
     inProgress: true,
@@ -1196,7 +1205,7 @@ export const fetchTradingStatsFromApi = async (
     pageLimit: 2000,
     minWindowMs: 30 * 60 * 1000,
     maxRequests: 160,
-    initialWindows: shouldContinueScan ? cachedScan?.pendingWindows : undefined,
+    initialWindows: shouldContinueScan ? scanWindows : undefined,
     onProgress: (progress) => {
       const rows = progressBaseRows.length > 0 ? mergeFills(progressBaseRows, progress.rows) : mergeFills([], progress.rows);
       tradingScanCache.set(cacheKey, {
@@ -1274,7 +1283,11 @@ export const fetchTradingStatsFromApi = async (
     );
   }
   if (shouldContinueScan) {
-    warnings.push("Continued API scan reused previously recovered fills and scanned only remaining time windows.");
+    warnings.push(
+      usingStatelessContinuation
+        ? "Continued API scan used browser-provided remaining time windows because the server scan cache was unavailable."
+        : "Continued API scan reused previously recovered fills and scanned only remaining time windows."
+    );
   }
   warnings.push("Hyperliquid fills are loaded with time-window splitting and de-duplication; very dense wallets can still hit API rate limits.");
   warnings.push(
@@ -1445,8 +1458,10 @@ export const fetchTradingStatsFromApi = async (
         complete: scanComplete,
         canContinue: pendingWindows.length > 0,
         pendingWindows: pendingWindows.length,
+        pendingWindowsDetail: pendingWindows,
         cachedFills: fills.length,
         rateLimited: rangeResult.rateLimited,
+        statelessDelta: usingStatelessContinuation,
       },
     },
     ...summary,
